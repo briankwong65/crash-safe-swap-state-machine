@@ -29,7 +29,7 @@ Open the printed URL (typically `http://localhost:5173`) in Chrome.
 ## Test
 
 ```bash
-npm test           # vitest run, 190 tests
+npm test           # vitest run, 232 tests
 npm run test:watch # vitest in watch mode
 npm run typecheck  # tsc --noEmit
 npm run build      # tsc --noEmit && vite build
@@ -106,9 +106,9 @@ extension. All four transactions are confirmed `accepted` on chain.
 
 ## Live-integration checklist
 
-These points are unverified from the development environment (no Chrome
-extension, no API key, no faucet funds were available there) and should be
-watched during the first live run:
+Both directions have since been run live, so most of this list is now
+settled. What remains unconfirmed is called out inline; the rest is kept as
+a record of what the mocked suite could not establish on its own:
 
 - The Aleo node's transaction endpoint paths and response shapes used by
   `execute.ts`. Both were confirmed live against
@@ -136,7 +136,9 @@ watched during the first live run:
   that runs first. Installing the peer would activate the cross-check
   (derive, compare against the heuristic, throw on mismatch rather than
   guessing) as a second source of truth. Both heuristics were confirmed
-  against a known-good example transactions on the live testnet
+  against a known-good example transactions, and have since run
+  correctly on both live swaps recorded above. Confirmed against the live
+  testnet
   node (`https://api.provable.com/v2/testnet/transaction/{id}`) and land on
   the correct values, which is why the peer was deliberately not installed.
 - The exact wording the DEX API uses for a thin-liquidity failure, so the

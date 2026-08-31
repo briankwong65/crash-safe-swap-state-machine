@@ -17,7 +17,7 @@
 The agent wrote the reducer (`swapMachine.ts`), the effect-running hook
 (`useSwapFlow.ts`), the wallet-session hook, the pinned API client, the
 pending-claim persistence module, all UI components, and the test suite
-(190 tests across 13 files). The task plan itself — component boundaries,
+(232 tests across 14 files). The task plan itself — component boundaries,
 the state machine's members, the persistence approach — was drafted by the
 agent from the spec brief and revised across the implementation as
 real API shapes turned up.
