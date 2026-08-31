@@ -20,9 +20,9 @@ reads the same `isBusy` predicate, so the two cannot drift.
 
 Each quote is stored with the exact `{direction, amountRaw, slippageBps}`
 it was fetched for. Enforced twice: any input change clears the quote, and
-`SUBMIT` re-compares stored inputs against current ones, refusing on
-mismatch. The second check is redundant by construction, but means a future
-UI bug cannot submit against a stale quote.
+`SUBMIT` re-compares stored inputs against current ones. The second check
+is redundant by construction, but means a future UI bug cannot submit
+against a stale quote.
 
 ## Pending-claim persistence
 
