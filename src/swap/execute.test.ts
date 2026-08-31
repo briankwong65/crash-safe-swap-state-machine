@@ -2,7 +2,7 @@ import { SwapOutputNotFinalizedError, deriveSwapId } from '@provablehq/shield-sw
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   TransactionRejectedError,
-  claimWithRetry, resolveOnChainTransactionId,
+  claimWithRetry, isTransientReadError, resolveOnChainTransactionId,
   recoverSwapIdentity,
   submitSwapRequest,
   waitForTransaction,
@@ -513,5 +513,48 @@ describe('AMM import programs', () => {
     // "External stack for 'shield_swap_arc20_credits.aleo' does not exist".
     expect(args.tokenPrograms).toContain('shield_swap_arc20_credits.aleo')
     expect(args.tokenPrograms).toContain('test_arc20_eth.aleo')
+  })
+})
+
+describe('claimWithRetry — transient read failures', () => {
+  it('retries a flaky chain read instead of failing the whole flow', async () => {
+    const claimSwapOutput = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error('Wallet adapter transport does not handle method "getMappingValue" (all 2 transports failed)'),
+      )
+      .mockResolvedValueOnce({ transactionId: 'at1claim', amountOut: 9n, amountRemaining: 0n })
+    const swap = vi.fn()
+    const client = { claimSwapOutput, swap, resolveDexImports: vi.fn(async () => ({})) } as never
+
+    const result = await claimWithRetry({ client, api: {} as never, sleep: noSleep }, handle as never)
+
+    expect(result.transactionId).toBe('at1claim')
+    expect(claimSwapOutput).toHaveBeenCalledTimes(2)
+    expect(swap).not.toHaveBeenCalled()
+  })
+
+  it('never retries a wallet rejection — re-prompting a user who declined is worse than failing', async () => {
+    const claimSwapOutput = vi.fn().mockRejectedValue(new Error('User rejected the request'))
+    const client = { claimSwapOutput, resolveDexImports: vi.fn(async () => ({})) } as never
+
+    await expect(
+      claimWithRetry({ client, api: {} as never, sleep: noSleep }, handle as never),
+    ).rejects.toThrow(/rejected/i)
+    expect(claimSwapOutput).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives transient failures a bounded budget, well below the not-finalized one', async () => {
+    const claimSwapOutput = vi.fn().mockRejectedValue(new Error('Failed to fetch'))
+    const client = { claimSwapOutput, resolveDexImports: vi.fn(async () => ({})) } as never
+
+    await expect(
+      claimWithRetry({ client, api: {} as never, sleep: noSleep }, handle as never, { attempts: 60 }),
+    ).rejects.toThrow(/failed to fetch/i)
+    expect(claimSwapOutput.mock.calls.length).toBeLessThanOrEqual(5)
+  })
+
+  it('classifies a stack-authorization failure as permanent, not transient', () => {
+    expect(isTransientReadError(new Error('Stack authorization failed: ...'))).toBe(false)
   })
 })

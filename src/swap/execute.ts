@@ -27,6 +27,40 @@ export type ExecuteDeps = {
   transactionStatus?: (id: string) => Promise<{ status: string; transactionId?: string; error?: string }>
 }
 
+/** How many times a transient chain-read failure may be retried during a claim. */
+const TRANSIENT_READ_ATTEMPTS = 3
+
+/**
+ * Whether an error looks like a chain READ that failed for environmental
+ * reasons — a transport hiccup, a proxy blip, a momentarily unreachable node.
+ *
+ * Deliberately narrow. A wallet rejection, an authorization failure, or
+ * anything naming the user's decision must NOT be retried: re-prompting a user
+ * who just declined is worse than failing, and none of those get better on a
+ * second attempt.
+ */
+export function isTransientReadError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+
+  if (
+    message.includes('reject') ||
+    message.includes('declin') ||
+    message.includes('denied') ||
+    message.includes('authorization failed')
+  ) {
+    return false
+  }
+
+  return (
+    message.includes('transports failed') ||
+    message.includes('does not handle method') ||
+    message.includes('failed to fetch') ||
+    message.includes('networkerror') ||
+    message.includes('econnreset') ||
+    message.includes('timeout')
+  )
+}
+
 /** Aleo transaction ids are bech32m with an `at1` prefix; wallet handles are not. */
 export function isOnChainTransactionId(id: string): boolean {
   return id.startsWith('at1')
@@ -392,6 +426,7 @@ export async function claimWithRetry(
   })
 
   let lastError: unknown
+  let transientAttempts = 0
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       return (await deps.client.claimSwapOutput({
@@ -399,7 +434,19 @@ export async function claimWithRetry(
         imports,
       })) as ClaimSwapOutputReturnType
     } catch (error) {
-      if (!(error instanceof SwapOutputNotFinalizedError)) throw error
+      const notFinalized = error instanceof SwapOutputNotFinalizedError
+      const transient = !notFinalized && isTransientReadError(error)
+
+      // A single flaky chain read used to take the whole flow to an error
+      // state for a swap that was fine — the user then clicked "Resume claim"
+      // and it worked first time. Give transient read failures a small budget
+      // of their own, kept far below the not-finalized budget so a genuinely
+      // broken read still surfaces quickly.
+      if (transient) transientAttempts += 1
+      if (!notFinalized && (!transient || transientAttempts > TRANSIENT_READ_ATTEMPTS)) {
+        throw error
+      }
+
       lastError = error
       if (attempt < attempts) {
         options.onRetry?.(attempt)
