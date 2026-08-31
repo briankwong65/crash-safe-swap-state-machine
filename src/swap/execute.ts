@@ -3,6 +3,7 @@ import {
   type ClaimSwapOutputReturnType,
   type SwapHandle,
   SwapOutputNotFinalizedError,
+  deriveSwapId,
 } from '@provablehq/shield-swap-sdk'
 import { ALEO_NODE_URL, POOL_KEY, PROGRAMS } from '../config'
 import { aleoRecordRequest, ethRecordRequest } from '../wallet/walletConfig'
@@ -114,48 +115,21 @@ export async function waitForTransaction(
 }
 
 /**
- * Recovers the wallet-generated swap id and blinded recipient.
- *
- * Chain first: the swap id is the `shield_swap.aleo/swap` transition's first
- * public field output, and the blinded recipient is its public address input.
- * The API indexer is the fallback, under a bounded retry, because it can lag the
- * chain.
+ * Recovers the blinded recipient from the indexer as a bounded-retry fallback
+ * for when the confirmed transaction's public inputs don't carry it yet — the
+ * indexer can lag the chain by a few seconds.
  */
-export async function recoverSwapIdentity(
+async function recoverBlindedAddressFromIndexer(
   deps: ExecuteDeps,
-  txId: string,
-  _handle: SwapHandle,
-): Promise<{ swapId: string; blindedAddress: string }> {
-  const transaction = await readTransaction(deps, txId)
-  const transitions = transaction?.execution?.transitions ?? []
-
-  const swapTransition =
-    transitions.find((t) => t.program === 'shield_swap.aleo' && t.function === 'swap') ??
-    transitions.find((t) => t.program === 'shield_swap.aleo')
-
-  const swapId = swapTransition?.outputs?.find(
-    (output) => output.type === 'public' && output.value?.endsWith('field'),
-  )?.value
-
-  if (!swapId) {
-    throw new Error(
-      `Could not read the swap id from transaction ${txId}. The claim can be resumed once the transaction is readable.`,
-    )
-  }
-
-  const fromChain = swapTransition?.inputs?.find(
-    (input) => input.type === 'public' && input.value?.startsWith('aleo1'),
-  )?.value
-
-  if (fromChain) return { swapId, blindedAddress: fromChain }
-
+  swapId: string,
+): Promise<string> {
   const sleep = depsSleep(deps)
   let lastError: unknown
   for (let attempt = 1; attempt <= TIMING.indexerAttempts; attempt += 1) {
     try {
       const swap = (await deps.api.getSwap(swapId)) as { data?: { recipient?: string } }
       const recipient = swap.data?.recipient
-      if (recipient) return { swapId, blindedAddress: recipient }
+      if (recipient) return recipient
     } catch (error) {
       lastError = error
     }
@@ -167,6 +141,90 @@ export async function recoverSwapIdentity(
       lastError instanceof Error ? `: ${lastError.message}` : ''
     }. The claim can be resumed later; do not submit another swap.`,
   )
+}
+
+/**
+ * Recovers the wallet-generated swap id and blinded recipient.
+ *
+ * Blinded address first: the public address input on the confirmed
+ * `shield_swap.aleo/swap` transition, falling back to the API indexer under a
+ * bounded retry when that input isn't there yet.
+ *
+ * Swap id: `deriveSwapId` reproduces the contract's own hash byte-for-byte
+ * from the handle's `poolKey`/`zeroForOne`/`amountIn`/`sqrtPriceLimit`/`nonce`
+ * plus the blinded address just recovered — every field but the address is
+ * already on the handle for every new swap, wallet path included. That is
+ * preferred whenever the handle carries those fields. The transaction's first
+ * public field-typed output is read as a heuristic fallback for handles
+ * persisted before those fields existed, and doubles as the indexer lookup
+ * key. When both a derived id and the heuristic are available they must
+ * agree; a mismatch means one of our assumptions about the chain is wrong,
+ * and this throws rather than picking one to act on.
+ */
+export async function recoverSwapIdentity(
+  deps: ExecuteDeps,
+  txId: string,
+  handle: SwapHandle,
+): Promise<{ swapId: string; blindedAddress: string }> {
+  const transaction = await readTransaction(deps, txId)
+  const transitions = transaction?.execution?.transitions ?? []
+
+  const swapTransition =
+    transitions.find((t) => t.program === 'shield_swap.aleo' && t.function === 'swap') ??
+    transitions.find((t) => t.program === 'shield_swap.aleo')
+
+  const heuristicSwapId = swapTransition?.outputs?.find(
+    (output) => output.type === 'public' && output.value?.endsWith('field'),
+  )?.value
+
+  if (!heuristicSwapId) {
+    throw new Error(
+      `Could not read the swap id from transaction ${txId}. The claim can be resumed once the transaction is readable.`,
+    )
+  }
+
+  const fromChain = swapTransition?.inputs?.find(
+    (input) => input.type === 'public' && input.value?.startsWith('aleo1'),
+  )?.value
+
+  const blindedAddress =
+    fromChain ?? (await recoverBlindedAddressFromIndexer(deps, heuristicSwapId))
+
+  let swapId = heuristicSwapId
+
+  if (
+    handle.zeroForOne !== undefined &&
+    handle.sqrtPriceLimit !== undefined &&
+    handle.nonce !== undefined
+  ) {
+    let derivedSwapId: string | undefined
+    try {
+      derivedSwapId = await deriveSwapId({
+        poolKey: handle.poolKey,
+        zeroForOne: handle.zeroForOne,
+        amountIn: handle.amountIn,
+        sqrtPriceLimit: handle.sqrtPriceLimit,
+        blindedAddress,
+        nonce: handle.nonce,
+      })
+    } catch {
+      // The optional local-hashing peer may not be installed, or the handle's
+      // fields may not parse as their Aleo types. Either way, fall back to
+      // the transaction heuristic rather than taking down recovery.
+      derivedSwapId = undefined
+    }
+
+    if (derivedSwapId !== undefined) {
+      if (derivedSwapId !== heuristicSwapId) {
+        throw new Error(
+          `Derived swap id ${derivedSwapId} does not match the swap id read from transaction ${txId} (${heuristicSwapId}). Refusing to guess which is correct — do not submit another swap.`,
+        )
+      }
+      swapId = derivedSwapId
+    }
+  }
+
+  return { swapId, blindedAddress }
 }
 
 /**
@@ -186,6 +244,10 @@ export async function claimWithRetry(
   const attempts = options.attempts ?? TIMING.claimRetryAttempts
   const intervalMs = options.intervalMs ?? TIMING.claimRetryIntervalMs
   const sleep = depsSleep(deps)
+
+  if (attempts < 1) {
+    throw new Error(`claimWithRetry requires attempts >= 1, got ${attempts}`)
+  }
 
   const imports = await deps.client.resolveDexImports({
     tokenPrograms: [PROGRAMS.credits, PROGRAMS.eth],

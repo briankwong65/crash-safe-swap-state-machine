@@ -1,6 +1,11 @@
-import { SwapOutputNotFinalizedError } from '@provablehq/shield-swap-sdk'
-import { describe, expect, it, vi } from 'vitest'
+import { SwapOutputNotFinalizedError, deriveSwapId } from '@provablehq/shield-swap-sdk'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { claimWithRetry, recoverSwapIdentity, submitSwapRequest } from './execute'
+
+vi.mock('@provablehq/shield-swap-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@provablehq/shield-swap-sdk')>()
+  return { ...actual, deriveSwapId: vi.fn() }
+})
 
 const noSleep = async () => {}
 
@@ -106,6 +111,17 @@ describe('recoverSwapIdentity', () => {
     outputs: [{ type: 'public', value: '777field' }],
   }
 
+  const derivableHandle = {
+    ...handle,
+    zeroForOne: true,
+    sqrtPriceLimit: 0n,
+    nonce: 5n,
+  }
+
+  beforeEach(() => {
+    vi.mocked(deriveSwapId).mockReset()
+  })
+
   it('reads the swap id and blinded recipient from the confirmed transaction', async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(
@@ -122,6 +138,7 @@ describe('recoverSwapIdentity', () => {
 
     expect(identity.swapId).toBe('777field')
     expect(identity.blindedAddress).toBe('aleo1blindedrecipient')
+    expect(deriveSwapId).not.toHaveBeenCalled()
   })
 
   it('falls back to the indexer when the chain read has no address input', async () => {
@@ -171,6 +188,69 @@ describe('recoverSwapIdentity', () => {
 
     expect(getSwap).toHaveBeenCalledTimes(2)
     expect(identity.blindedAddress).toBe('aleo1eventually')
+  })
+
+  it('derives the swap id from the handle rather than the transaction when zeroForOne, sqrtPriceLimit, and nonce are present', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ execution: { transitions: [swapTransition] } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    )
+    vi.mocked(deriveSwapId).mockResolvedValueOnce('777field')
+
+    const identity = await recoverSwapIdentity(
+      { client: {} as never, api: {} as never, fetchImpl, sleep: noSleep },
+      'at1req',
+      derivableHandle as never,
+    )
+
+    expect(deriveSwapId).toHaveBeenCalledWith({
+      poolKey: 'pool-field',
+      zeroForOne: true,
+      amountIn: 100_000n,
+      sqrtPriceLimit: 0n,
+      blindedAddress: 'aleo1blindedrecipient',
+      nonce: 5n,
+    })
+    expect(identity.swapId).toBe('777field')
+    expect(identity.blindedAddress).toBe('aleo1blindedrecipient')
+  })
+
+  it('falls back to the transaction heuristic when deriveSwapId fails', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ execution: { transitions: [swapTransition] } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    )
+    vi.mocked(deriveSwapId).mockRejectedValueOnce(new Error('optional peer not installed'))
+
+    const identity = await recoverSwapIdentity(
+      { client: {} as never, api: {} as never, fetchImpl, sleep: noSleep },
+      'at1req',
+      derivableHandle as never,
+    )
+
+    expect(identity.swapId).toBe('777field')
+  })
+
+  it('throws when the derived swap id disagrees with the transaction heuristic, rather than picking one', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ execution: { transitions: [swapTransition] } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    )
+    vi.mocked(deriveSwapId).mockResolvedValueOnce('888field')
+
+    await expect(
+      recoverSwapIdentity(
+        { client: {} as never, api: {} as never, fetchImpl, sleep: noSleep },
+        'at1req',
+        derivableHandle as never,
+      ),
+    ).rejects.toThrow(/does not match/)
   })
 })
 
@@ -224,5 +304,20 @@ describe('claimWithRetry', () => {
     ).rejects.toThrow('wallet rejected')
 
     expect(claimSwapOutput).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects with a real Error rather than throwing undefined when attempts is 0', async () => {
+    const claimSwapOutput = vi.fn()
+    const swap = vi.fn()
+    const client = { claimSwapOutput, swap, resolveDexImports: vi.fn(async () => ({})) } as never
+
+    await expect(
+      claimWithRetry({ client, api: {} as never, sleep: noSleep }, handle as never, {
+        attempts: 0,
+      }),
+    ).rejects.toBeInstanceOf(Error)
+
+    expect(claimSwapOutput).not.toHaveBeenCalled()
+    expect(swap).not.toHaveBeenCalled()
   })
 })
