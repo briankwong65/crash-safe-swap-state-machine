@@ -29,14 +29,19 @@ export function assertPinnedPlan(
   plan: Pick<SwapPlan, 'multiHop' | 'poolKeys'>,
   poolKey: string = POOL_KEY,
 ): void {
-  if (plan.multiHop || plan.poolKeys.length !== 1) {
+  // Defensive: a malformed plan (e.g. a bad API response) should still fail
+  // closed as a route rejection, not as a raw TypeError that skips the
+  // user-facing message in classifyQuoteError.
+  const poolKeys = plan.poolKeys ?? []
+
+  if (plan.multiHop || poolKeys.length !== 1) {
     throw new WrongRouteError(
       'multi-hop',
-      `Route returned ${plan.poolKeys.length} hops; only a direct swap through the pinned pool is allowed.`,
+      `Route returned ${poolKeys.length} hops; only a direct swap through the pinned pool is allowed.`,
     )
   }
 
-  const [only] = plan.poolKeys
+  const [only] = poolKeys
   if (only !== poolKey) {
     throw new WrongRouteError(
       'wrong-pool',
@@ -83,13 +88,34 @@ export async function fetchPinnedQuote(
   }
 }
 
+// Bare 'exceeds' used to be a hint on its own, which misfired on things like
+// "Request exceeds rate limit" that have nothing to do with trade size. Only
+// phrasing that names pool depth belongs here; 'liquidity' alone still covers
+// most real messages, so the multi-word entries are there to be specific
+// about size-related "exceeds" wording without matching every use of the verb.
 const LIQUIDITY_HINTS = [
   'insufficient liquidity',
   'no route',
   'not tradeable',
-  'exceeds',
+  'exceeds available liquidity',
+  'exceeds pool depth',
   'liquidity',
 ]
+
+// Matches an HTTP 401/403 only as a standalone status-like token — e.g. the
+// "(401)" in PinnedApiClient's `Route request failed (401): <body>` — and not
+// as a substring of an unrelated number such as an amount, fee, or gas limit
+// ("4033000000", "5403", "40312", "403000" must all miss this).
+const AUTH_STATUS_PATTERN = /\b(?:401|403)\b/
+
+// The user's `ss_...` API key must never reach a user-facing message. This is
+// a last-resort scrub for the generic fallback below, which otherwise echoes
+// whatever an upstream error/response says verbatim.
+const API_KEY_PATTERN = /ss_[A-Za-z0-9_-]+/g
+
+function redactApiKey(message: string): string {
+  return message.replace(API_KEY_PATTERN, 'ss_[redacted]')
+}
 
 /** Maps a quote failure onto something a non-Aleo user can act on. */
 export function classifyQuoteError(error: unknown): FlowError {
@@ -113,12 +139,12 @@ export function classifyQuoteError(error: unknown): FlowError {
     }
   }
 
-  if (message.includes('401') || message.includes('403')) {
+  if (AUTH_STATUS_PATTERN.test(message)) {
     return {
       kind: 'recoverable',
       message: 'The DEX API rejected the request. Check that the API key is a valid testnet ss_ key.',
     }
   }
 
-  return { kind: 'recoverable', message }
+  return { kind: 'recoverable', message: redactApiKey(message) }
 }

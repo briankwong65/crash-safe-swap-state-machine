@@ -57,6 +57,56 @@ describe('assertPinnedPlan', () => {
       WrongRouteError,
     )
   })
+
+  it('rejects a malformed plan with undefined poolKeys as a route rejection, not a TypeError', () => {
+    try {
+      assertPinnedPlan({ multiHop: false, poolKeys: undefined } as never)
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(WrongRouteError)
+      expect((error as WrongRouteError).reason).toBe('multi-hop')
+    }
+  })
+
+  it('rejects a case-shifted pool key', () => {
+    try {
+      assertPinnedPlan({ multiHop: false, poolKeys: [POOL_KEY.toUpperCase()] })
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(WrongRouteError)
+      expect((error as WrongRouteError).reason).toBe('wrong-pool')
+    }
+  })
+
+  it('rejects a whitespace-padded pool key', () => {
+    try {
+      assertPinnedPlan({ multiHop: false, poolKeys: [` ${POOL_KEY} `] })
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(WrongRouteError)
+      expect((error as WrongRouteError).reason).toBe('wrong-pool')
+    }
+  })
+
+  it('rejects a pool key that is a prefix of the pinned key', () => {
+    try {
+      assertPinnedPlan({ multiHop: false, poolKeys: [POOL_KEY.slice(0, -5)] })
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(WrongRouteError)
+      expect((error as WrongRouteError).reason).toBe('wrong-pool')
+    }
+  })
+
+  it('rejects a pool key that is a superstring of the pinned key', () => {
+    try {
+      assertPinnedPlan({ multiHop: false, poolKeys: [`${POOL_KEY}9`] })
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(WrongRouteError)
+      expect((error as WrongRouteError).reason).toBe('wrong-pool')
+    }
+  })
 })
 
 describe('fetchPinnedQuote', () => {
@@ -134,9 +184,49 @@ describe('classifyQuoteError', () => {
     expect(error.message).toMatch(/API key/i)
   })
 
+  it('treats a forbidden response as recoverable, matching only the standalone status', () => {
+    const error = classifyQuoteError(new Error('Route request failed (403): forbidden'))
+    expect(error.kind).toBe('recoverable')
+    expect(error.message).toMatch(/API key/i)
+  })
+
+  it('treats a tightened liquidity-exceeded message as recoverable and asks for a smaller amount', () => {
+    const error = classifyQuoteError(new Error('Trade amount exceeds available liquidity for this pool'))
+    expect(error.kind).toBe('recoverable')
+    expect(error.message).toMatch(/reduce/i)
+  })
+
   it('falls back to a recoverable generic message', () => {
     const error = classifyQuoteError(new Error('socket hang up'))
     expect(error.kind).toBe('recoverable')
     expect(error.message).toContain('socket hang up')
+  })
+
+  describe('does not misfire on incidental digits or the bare word "exceeds"', () => {
+    const cases: Array<[string, string]> = [
+      ['an invalid-amount message with digits that contain 403', 'Amount 4033000000 is invalid'],
+      ['a 5xx message with digits that contain 403', 'Server error 5403: internal failure'],
+      ['a fee-too-low message with digits that contain 403', 'Transaction fee 40312 too low'],
+      ['a gas-limit message with digits that contain 403', 'Gas limit 403000 exceeded for this call'],
+      ['a rate-limit message using the bare word "exceeds"', 'Request exceeds rate limit, try again later'],
+    ]
+
+    it.each(cases)('%s is not reported as an API-key or liquidity problem', (_label, rawMessage) => {
+      const error = classifyQuoteError(new Error(rawMessage))
+      expect(error.kind).toBe('recoverable')
+      expect(error.message).not.toMatch(/API key/i)
+      expect(error.message).not.toMatch(/reduce/i)
+      // Unrecognised shapes fall back to the original message verbatim.
+      expect(error.message).toBe(rawMessage)
+    })
+  })
+
+  it('redacts an ss_ API key from a fallback message rather than echoing it', () => {
+    const error = classifyQuoteError(
+      new Error('Route request failed (500): saw header Authorization: Bearer ss_abcDEF123-secret_value'),
+    )
+    expect(error.kind).toBe('recoverable')
+    expect(error.message).not.toContain('ss_abcDEF123-secret_value')
+    expect(error.message).not.toMatch(/ss_[A-Za-z0-9_-]*secret/i)
   })
 })
