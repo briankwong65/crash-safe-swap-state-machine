@@ -381,8 +381,14 @@ export async function claimWithRetry(
     throw new Error(`claimWithRetry requires attempts >= 1, got ${attempts}`)
   }
 
+  // The claim can run in a session that never saw the quote (after a reload),
+  // so it cannot read the registry for AMM programs. Resolve over the full set
+  // this pair can touch: ALEO's AMM wrapper, its native record program, and
+  // ETH. A superset is safe — resolveDexImports fetches each program once —
+  // whereas omitting the wrapper fails the prover with "External stack for
+  // 'shield_swap_arc20_credits.aleo' does not exist".
   const imports = await deps.client.resolveDexImports({
-    tokenPrograms: [PROGRAMS.credits, PROGRAMS.eth],
+    tokenPrograms: [PROGRAMS.aleoWrapper, PROGRAMS.credits, PROGRAMS.eth],
   })
 
   let lastError: unknown

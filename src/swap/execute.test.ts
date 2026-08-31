@@ -495,3 +495,23 @@ describe('resolveOnChainTransactionId', () => {
     expect(transactionStatus).toHaveBeenCalledTimes(3)
   })
 })
+
+describe('AMM import programs', () => {
+  it('claims with the ALEO AMM wrapper in the imports map', async () => {
+    const resolveDexImports = vi.fn(async () => ({}))
+    const claimSwapOutput = vi.fn(async () => ({
+      transactionId: 'at1claim',
+      amountOut: 1n,
+      amountRemaining: 0n,
+    }))
+    const client = { claimSwapOutput, resolveDexImports } as never
+
+    await claimWithRetry({ client, api: {} as never, sleep: noSleep }, handle as never)
+
+    const [args] = resolveDexImports.mock.calls[0] as unknown as [{ tokenPrograms: string[] }]
+    // Omitting this program fails the prover with
+    // "External stack for 'shield_swap_arc20_credits.aleo' does not exist".
+    expect(args.tokenPrograms).toContain('shield_swap_arc20_credits.aleo')
+    expect(args.tokenPrograms).toContain('test_arc20_eth.aleo')
+  })
+})

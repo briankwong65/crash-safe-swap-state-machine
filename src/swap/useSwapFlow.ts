@@ -46,13 +46,30 @@ export type UseSwapFlowArgs = {
   effects?: Partial<SwapFlowEffects>
 }
 
+/**
+ * The program a write's `imports` map must carry for a token.
+ *
+ * This is the token's AMM program, NOT the program its records live in. ALEO's
+ * records are native `credits.aleo`, but inside the AMM it is represented by
+ * `shield_swap_arc20_credits.aleo` — pass the record program and the prover
+ * rejects the swap with "External stack for 'shield_swap_arc20_credits.aleo'
+ * does not exist". Read from the registry rather than hard-coded, per the
+ * requirement to discover AMM token programs through the API.
+ */
+function ammProgramOf(token: TokenInfo, fallback: string): string {
+  return token.ammTokenProgram ?? fallback
+}
+
 function tokensFor(
   tokens: { aleo: TokenInfo; eth: TokenInfo },
   direction: QuoteInputs['direction'],
 ) {
+  const aleoProgram = ammProgramOf(tokens.aleo, PROGRAMS.aleoWrapper)
+  const ethProgram = ammProgramOf(tokens.eth, PROGRAMS.eth)
+
   return direction === 'aleoToEth'
-    ? { tokenIn: tokens.aleo, tokenOut: tokens.eth, inProgram: PROGRAMS.credits, outProgram: PROGRAMS.eth }
-    : { tokenIn: tokens.eth, tokenOut: tokens.aleo, inProgram: PROGRAMS.eth, outProgram: PROGRAMS.credits }
+    ? { tokenIn: tokens.aleo, tokenOut: tokens.eth, inProgram: aleoProgram, outProgram: ethProgram }
+    : { tokenIn: tokens.eth, tokenOut: tokens.aleo, inProgram: ethProgram, outProgram: aleoProgram }
 }
 
 /**
