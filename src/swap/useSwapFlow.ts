@@ -151,7 +151,12 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
         type: 'CLAIM_CONFIRMED',
         claimTxId: result.transactionId,
         amountOut: result.amountOut,
-        tokenOutDecimals: tokenOut?.decimals ?? 18,
+        // Fix 8: per-direction fallback, matching the resume path below —
+        // aleoToEth buys ETH (18 decimals), ethToAleo buys ALEO (6). Reached
+        // only if the claim confirms while `args.tokens` is still null; the
+        // old flat `?? 18` fallback misreported an ethToAleo receipt by
+        // 10^12.
+        tokenOutDecimals: tokenOut?.decimals ?? (direction === 'aleoToEth' ? 18 : 6),
         tokenOutSymbol: tokenOut?.symbol ?? '',
       })
 
@@ -160,6 +165,56 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [deps, args.tokens, args.onClaimed],
+  )
+
+  /**
+   * A wallet-path handle returned by `submitSwapRequest` carries no `swapId`
+   * or `blindedAddress` — the wallet resolves the input record itself, so
+   * nothing here ever sees the blinding factor. Those two fields are
+   * recovered from the confirmed request transaction (see
+   * `recoverSwapIdentity`); `claimSwapOutput` throws `handle.swapId is not
+   * set` without them. `startClaim`'s optional `prepare` step exists solely
+   * to run that recovery, under the same in-flight lock as the claim itself,
+   * for every path that can reach `startClaim` holding an identity-less
+   * handle: a page reload during `requestPending` (the resume effect below)
+   * and a manual "Resume claim" after an in-session failure that happened
+   * before `submit` ever ran its own recovery (the `resumeClaim` branches
+   * further down). `submit`'s own first-time path already recovers identity
+   * inline before calling `startClaim`, so `needsRecovery` is false there
+   * and `prepare` is never passed.
+   */
+  const recoverAndPersist = useCallback(
+    async (handle: SwapHandle, requestTxId: string, direction: QuoteInputs['direction']) => {
+      // Required, not optional: `recoverSwapIdentity`'s `readTransaction`
+      // returns null for a transaction that isn't confirmed yet and throws
+      // "Could not read the swap id" — exactly what a reload during
+      // `requestPending` (request submitted, not yet confirmed) would hit
+      // without this wait.
+      await effects.waitForTransaction(deps, requestTxId)
+      const identity = await effects.recoverIdentity(deps, requestTxId, handle)
+      handle.swapId = identity.swapId
+      handle.blindedAddress = identity.blindedAddress
+
+      if (args.address) {
+        // Re-persist so a SECOND reload — one that lands after recovery but
+        // before the claim confirms — skips this recovery entirely and goes
+        // straight to the claim. Carries forward whatever was already on
+        // disk for this claim (amount, createdAt) rather than guessing at
+        // it here.
+        const existing = loadPendingClaim(args.address)
+        savePendingClaim({
+          version: 1,
+          address: args.address,
+          requestTxId,
+          direction,
+          amountInRaw: existing?.amountInRaw ?? handle.amountIn.toString(),
+          handle: serializeHandle(handle),
+          createdAt: existing?.createdAt ?? Date.now(),
+        })
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [deps, args.address],
   )
 
   /**
@@ -173,24 +228,40 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
    * `busy`) keep asking a single, cheap, per-instance ref rather than
    * reaching into module state.
    *
-   * Registers before `runClaim` starts (not after), and always cleans up
-   * in `finally` — including on failure — so a genuine retry later is
-   * never permanently blocked by its own earlier, failed attempt.
+   * Registers before anything (including the optional `prepare` recovery
+   * step) starts — not after — and always cleans up in `finally`,
+   * including on failure, so a genuine retry later is never permanently
+   * blocked by its own earlier, failed attempt.
    */
   const startClaim = useCallback(
-    (handle: SwapHandle, direction: QuoteInputs['direction'], requestTxId: string) => {
+    (
+      handle: SwapHandle,
+      direction: QuoteInputs['direction'],
+      requestTxId: string,
+      prepare?: () => Promise<void>,
+    ) => {
       if (inFlight.current || claimsInFlight.has(requestTxId)) return
       inFlight.current = true
       claimsInFlight.add(requestTxId)
-      void runClaim(handle, direction)
-        .catch(fail)
-        .finally(() => {
+      void (async () => {
+        try {
+          await prepare?.()
+          await runClaim(handle, direction)
+        } catch (error) {
+          fail(error)
+        } finally {
           inFlight.current = false
           claimsInFlight.delete(requestTxId)
-        })
+        }
+      })()
     },
     [runClaim, fail],
   )
+
+  /** Whether `handle` still needs its identity recovered before it can claim. */
+  function needsIdentityRecovery(handle: SwapHandle): boolean {
+    return handle.swapId === undefined || handle.blindedAddress === undefined
+  }
 
   // Resume a persisted claim, but only for the wallet that made it.
   useEffect(() => {
@@ -249,10 +320,23 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
     // button — this does not retry silently forever.
     if (!autoResumeAttempted.current) {
       autoResumeAttempted.current = true
-      startClaim(handle, own.direction, own.requestTxId)
+      // Fix 1 (CRITICAL): a wallet-path handle deserialized from storage
+      // never carries `swapId`/`blindedAddress` unless `submit` already
+      // recovered and re-persisted them (see `recoverAndPersist`) before the
+      // reload happened. Without this, `claimSwapOutput` throws
+      // unconditionally — the previous version called `startClaim` directly
+      // here with no recovery step at all.
+      startClaim(
+        handle,
+        own.direction,
+        own.requestTxId,
+        needsIdentityRecovery(handle)
+          ? () => recoverAndPersist(handle, own.requestTxId, own.direction)
+          : undefined,
+      )
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [args.address, args.tokens, startClaim])
+  }, [args.address, args.tokens, startClaim, recoverAndPersist])
 
   const requestQuote = useCallback(
     (inputs: QuoteInputs) => {
@@ -302,6 +386,7 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
 
           handleRef.current = handle
           directionRef.current = inputs.direction
+          const createdAt = Date.now()
 
           // Persisted BEFORE the wait: a reload during confirmation must still
           // be able to resume the claim.
@@ -312,7 +397,7 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
             direction: inputs.direction,
             amountInRaw: inputs.amountRaw.toString(),
             handle: serializeHandle(handle),
-            createdAt: Date.now(),
+            createdAt,
           })
 
           dispatch({ type: 'REQUEST_SUBMITTED', requestTxId: handle.transactionId })
@@ -324,7 +409,34 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
           handle.swapId = identity.swapId
           handle.blindedAddress = identity.blindedAddress
 
-          await runClaim(handle, inputs.direction)
+          // Fix 1(a): re-persist now that the handle carries a real
+          // identity, so a reload after this point resumes straight into
+          // the claim instead of repeating recovery.
+          savePendingClaim({
+            version: 1,
+            address: args.address!,
+            requestTxId: handle.transactionId,
+            direction: inputs.direction,
+            amountInRaw: inputs.amountRaw.toString(),
+            handle: serializeHandle(handle),
+            createdAt,
+          })
+
+          // Fix 2: register this requestTxId in the module-level registry
+          // for the duration of the claim, the same registry `startClaim`
+          // checks. `submit` calls `runClaim` directly rather than through
+          // `startClaim` (its own `inFlight` guard is already held above,
+          // so routing through `startClaim` would just self-decline), but
+          // without this the registry never learns about a claim that
+          // started on the normal first-time path — a remount mid-claim
+          // would see nothing registered and let the resume effect start a
+          // second, concurrent `claimSwapOutput` for the same handle.
+          claimsInFlight.add(handle.transactionId)
+          try {
+            await runClaim(handle, inputs.direction)
+          } finally {
+            claimsInFlight.delete(handle.transactionId)
+          }
         } catch (error) {
           fail(error)
         } finally {
@@ -376,8 +488,20 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
     if (!handle || !direction || inFlight.current) return
 
     if (state.tag === 'outputFinalizing') {
-      // CLAIM is already legal here; no RETRY_CLAIM needed.
-      startClaim(handle, direction, state.requestTxId)
+      // CLAIM is already legal here; no RETRY_CLAIM needed. The handle can
+      // still be identity-less here too — e.g. the automatic mount-time
+      // attempt's own `prepare` step failed partway (say the confirmation
+      // wait timed out) before assigning `swapId`/`blindedAddress` — so this
+      // needs the same recovery fallback `startClaim` offers on the
+      // automatic path (Fix 1).
+      startClaim(
+        handle,
+        direction,
+        state.requestTxId,
+        needsIdentityRecovery(handle)
+          ? () => recoverAndPersist(handle, state.requestTxId, direction)
+          : undefined,
+      )
       return
     }
 
@@ -387,8 +511,20 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
     if (claimsInFlight.has(requestTxId)) return
 
     dispatch({ type: 'RETRY_CLAIM' })
-    startClaim(handle, direction, requestTxId)
-  }, [state, startClaim])
+    // Same reasoning as the `outputFinalizing` branch above: a failure that
+    // happened before `submit` reached its own identity recovery (e.g. the
+    // request confirmation wait failed) leaves `handle` without
+    // `swapId`/`blindedAddress`, and this is the manual retry for exactly
+    // that case (Fix 1).
+    startClaim(
+      handle,
+      direction,
+      requestTxId,
+      needsIdentityRecovery(handle)
+        ? () => recoverAndPersist(handle, requestTxId, direction)
+        : undefined,
+    )
+  }, [state, startClaim, recoverAndPersist])
 
   const reset = useCallback(() => {
     // Only ever clear a claim the connected wallet itself owns.

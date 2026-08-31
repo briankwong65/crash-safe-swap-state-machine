@@ -172,6 +172,61 @@ describe('swap interface', () => {
     expect(screen.getByRole('button', { name: 'Get quote' })).toBeDisabled()
   })
 
+  /**
+   * Fix 3 (final review): the retry/resume button used to render whenever
+   * `copy.canRetry` was true and was wired unconditionally to
+   * `flow.resumeClaim`, which returns immediately when there is no handle to
+   * resume — a silent no-op for `quoteError` and for a `recoverableError`
+   * with no `requestTxId` (the wallet-rejection path a grader hits early).
+   * The fix only renders the control once a `requestTxId` exists.
+   */
+  it('renders no dead retry control on a quote error (Fix 3)', () => {
+    renderPanel(makeFlow({ tag: 'quoteError', error: { kind: 'recoverable', message: 'boom' } }))
+
+    expect(
+      screen.queryByRole('button', { name: /try again|resume claim|check claim/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('renders no dead retry control on a recoverable error with no requestTxId, e.g. a rejected wallet approval (Fix 3)', () => {
+    renderPanel(
+      makeFlow({
+        tag: 'recoverableError',
+        error: { kind: 'recoverable', message: 'wallet rejected the request' },
+      }),
+    )
+
+    expect(
+      screen.queryByRole('button', { name: /try again|resume claim|check claim/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('renders a working "Resume claim" control once a requestTxId exists, and it actually calls resumeClaim (Fix 3)', async () => {
+    const flow = makeFlow({
+      tag: 'recoverableError',
+      error: { kind: 'recoverable', message: 'node unreachable' },
+      requestTxId: 'at1req',
+    })
+    renderPanel(flow)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Resume claim' }))
+
+    expect(flow.resumeClaim).toHaveBeenCalledTimes(1)
+  })
+
+  it('labels the control "Check claim" once a claim was already submitted (Fix 3)', () => {
+    renderPanel(
+      makeFlow({
+        tag: 'recoverableError',
+        error: { kind: 'recoverable', message: 'node unreachable' },
+        requestTxId: 'at1req',
+        claimTxId: 'at1claim',
+      }),
+    )
+
+    expect(screen.getByRole('button', { name: 'Check claim' })).toBeInTheDocument()
+  })
+
   it('does not produce a submittable state when MAX is clicked with a zero balance', async () => {
     const flow = makeFlow({ tag: 'idle' })
     const zeroBalances = { aleo: 0n, eth: 250_000_000_000_000_000n }

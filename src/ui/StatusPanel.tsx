@@ -35,9 +35,20 @@ export function StatusPanel({
       {requestTxId && <TxLink label="Swap request" txId={requestTxId} />}
       {claimTxId && <TxLink label="Output claim" txId={claimTxId} />}
 
-      {copy.canRetry && (
+      {/*
+       * Fix 3: `onRetry` is `flow.resumeClaim`, which returns immediately
+       * when there is nothing to resume (no handle). `copy.canRetry` is true
+       * for `quoteError` and for a `recoverableError` with no `requestTxId`
+       * (e.g. the wallet rejected the swap request before it ever reached
+       * chain) — both cases a button wired to `resumeClaim` would be a
+       * silent no-op. Rendering only once a `requestTxId` exists means every
+       * rendered button here does something real; in the cases where it's
+       * hidden, the primary "Get quote"/"Swap" button on the panel above
+       * already gives the user a working way forward.
+       */}
+      {copy.canRetry && requestTxId && (
         <button type="button" className="button button--secondary" onClick={onRetry}>
-          {requestTxId ? 'Resume claim' : 'Try again'}
+          {claimTxId ? 'Check claim' : 'Resume claim'}
         </button>
       )}
 

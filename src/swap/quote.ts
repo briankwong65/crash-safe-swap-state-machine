@@ -6,6 +6,7 @@ import {
 } from '@provablehq/shield-swap-sdk'
 import type { Client } from '@provablehq/veil-core'
 import { POOL_KEY } from '../config'
+import { TransactionRejectedError } from './execute'
 import type { FlowError, Quote, QuoteInputs } from './types'
 
 export class WrongRouteError extends Error {
@@ -126,6 +127,14 @@ export function classifyQuoteError(error: unknown): FlowError {
         error.reason === 'multi-hop'
           ? 'The quote came back as a multi-hop route. This app only trades the one direct ALEO/ETH pool, so the quote was rejected.'
           : 'The quote came back for a different pool. This app only trades the one direct ALEO/ETH pool, so the quote was rejected.',
+    }
+  }
+
+  if (error instanceof TransactionRejectedError) {
+    return {
+      kind: 'terminal',
+      message:
+        'The swap request was rejected on-chain at finalize — the trade did not go through and nothing was claimed. Get a fresh quote if you want to try again.',
     }
   }
 

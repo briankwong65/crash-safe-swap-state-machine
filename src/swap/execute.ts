@@ -87,11 +87,71 @@ async function readTransaction(
   return (await response.json()) as { execution?: { transitions?: TransitionLike[] } }
 }
 
+type ConfirmedTransactionLike = {
+  /**
+   * Confirmed live against the pinned node (`GET
+   * {ALEO_NODE_URL}/testnet/transaction/confirmed/{id}` on
+   * `api.provable.com/v2`, 2026-08-31): the two real transactions cited in
+   * the spec (an accepted swap request and its accepted claim) both
+   * came back `{ type, index, status: "accepted", finalize, transaction }`.
+   * `@provablehq/aleo-types`' `TransactionStatus` enum names the sibling
+   * values `"pending" | "accepted" | "failed" | "rejected"`, which lines up
+   * with the "accepted" seen live — but no genuinely REJECTED transaction
+   * was available to confirm the literal string on this endpoint. Treat
+   * anything other than exactly `"accepted"` as not-yet-confirmed, and
+   * `"rejected"` specifically as a hard stop (see README's live-integration
+   * checklist for the item asking this be confirmed against a real
+   * rejected transaction before relying on it further).
+   */
+  status?: string
+  transaction?: { execution?: { transitions?: TransitionLike[] } }
+}
+
 /**
- * Polls until the transaction is readable on chain.
+ * Unlike `readTransaction`'s plain `/transaction/{id}`, this reads the
+ * block-inclusion verdict: an Aleo execution that fails at finalize (e.g. a
+ * slippage floor the pool can no longer meet) still broadcasts and is still
+ * fully readable, with real transitions, on the plain endpoint — nothing
+ * there distinguishes it from genuine success. Only this `status` field
+ * does, which is why `waitForTransaction` reads this endpoint instead of
+ * `readTransaction`.
+ */
+async function readConfirmedTransaction(
+  deps: ExecuteDeps,
+  txId: string,
+): Promise<ConfirmedTransactionLike | null> {
+  const base = deps.nodeUrl ?? ALEO_NODE_URL
+  const response = await depsFetch(deps)(`${base}/testnet/transaction/confirmed/${txId}`)
+  if (!response.ok) return null
+  return (await response.json()) as ConfirmedTransactionLike
+}
+
+/**
+ * A transaction that broadcast and was included in a block, but whose
+ * execution was rejected at finalize. Distinct from every other failure in
+ * this module: nothing was claimed, there is no output to collect, and
+ * retrying the wait or resuming a claim can never succeed — see
+ * `classifyQuoteError`, which maps this to a terminal (non-retried) error
+ * rather than the generic recoverable fallback.
+ */
+export class TransactionRejectedError extends Error {
+  constructor(readonly txId: string) {
+    super(
+      `Transaction ${txId} was rejected on-chain at finalize — the execution did not take effect. This is not a delay; do not resume a claim for this request.`,
+    )
+    this.name = 'TransactionRejectedError'
+  }
+}
+
+/**
+ * Polls until the transaction is confirmed ACCEPTED on chain (lifecycle rule
+ * 6 — accepted or finalized, never merely "readable").
  *
  * A write can take one or two minutes, so slowness is never treated as failure
- * before the ceiling, and this function never resubmits anything.
+ * before the ceiling, and this function never resubmits anything. A REJECTED
+ * transaction is reported immediately, without waiting out the remaining
+ * attempts, since no amount of further polling will change a finalize
+ * rejection into an acceptance.
  */
 export async function waitForTransaction(
   deps: ExecuteDeps,
@@ -104,8 +164,16 @@ export async function waitForTransaction(
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     options.onAttempt?.(attempt)
-    const transaction = await readTransaction(deps, txId).catch(() => null)
-    if (transaction?.execution?.transitions?.length) return
+    const confirmed = await readConfirmedTransaction(deps, txId).catch(() => null)
+
+    if (confirmed?.status === 'rejected') {
+      throw new TransactionRejectedError(txId)
+    }
+
+    if (confirmed?.status === 'accepted' && confirmed.transaction?.execution?.transitions?.length) {
+      return
+    }
+
     if (attempt < attempts) await sleep(intervalMs)
   }
 

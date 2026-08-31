@@ -74,8 +74,27 @@ describe('record requests', () => {
 })
 
 describe('record access', () => {
-  it('permits resolving credits by microcredits and Token by amount', () => {
-    expect(JSON.stringify(RECORD_ACCESS)).toContain('microcredits')
-    expect(JSON.stringify(RECORD_ACCESS)).toContain('amount')
+  // Fix 6 (final review): substring-matching the serialized grant passes
+  // even on a STRUCTURALLY INVERTED grant (e.g. credits.aleo granting
+  // 'amount' and test_arc20_eth.aleo granting 'microcredits') — the string
+  // `JSON.stringify(RECORD_ACCESS)` still contains both words regardless of
+  // which program they're attached to. A wrong grant here only fails
+  // against a live wallet, so this exact object shape is the only static
+  // guard on a security-relevant config; `toEqual` on the whole object
+  // pins the program each field is scoped to, not just the words' presence.
+  it('permits resolving credits by microcredits and Token by amount, scoped to the right program each', () => {
+    expect(RECORD_ACCESS).toEqual({
+      level: 'byProgram',
+      programs: [
+        {
+          program: 'credits.aleo',
+          records: [{ recordname: 'credits', fields: [{ name: 'microcredits' }] }],
+        },
+        {
+          program: 'test_arc20_eth.aleo',
+          records: [{ recordname: 'Token', fields: [{ name: 'amount' }] }],
+        },
+      ],
+    })
   })
 })

@@ -81,20 +81,21 @@ describe('useSwapFlow resume', () => {
   it('resumes a pending claim belonging to the connected wallet', async () => {
     savePendingClaim(pending)
     const args = makeArgs({
-      // Task 10 fix round 1: the mount effect now auto-starts the claim the
-      // instant it resumes into `outputFinalizing`, and — because both
-      // dispatches (`RESUME` then `CLAIM`) fire synchronously within the same
-      // effect, before React commits anything in between — `outputFinalizing`
-      // itself is never independently observable here; the batched update
-      // lands directly on `awaitingClaimApproval`. Hanging the claim effect
-      // freezes the flow there so this test can still assert on the restored
-      // request context, independent of full auto-completion (covered by its
-      // own dedicated test below).
+      // Task 10 fix round 1: the mount effect auto-starts the claim once it
+      // resumes into `outputFinalizing`. The `pending` fixture's handle
+      // carries no `swapId`/`blindedAddress` (Fix 1, final review), so that
+      // start now runs `recoverAndPersist` first — a real
+      // `waitForTransaction` + `recoverIdentity` round trip — before
+      // dispatching CLAIM, which is why both effects need working
+      // implementations here rather than bare stubs. Hanging the claim
+      // effect itself freezes the flow at `awaitingClaimApproval` so this
+      // test can still assert on the restored request context, independent
+      // of full auto-completion (covered by its own dedicated test below).
       effects: {
         fetchQuote: vi.fn(),
         submitSwap: vi.fn(),
         waitForTransaction: vi.fn(async () => {}),
-        recoverIdentity: vi.fn(),
+        recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim: vi.fn(() => new Promise(() => {})),
       },
     })
@@ -380,6 +381,58 @@ describe('useSwapFlow automatic reload recovery (Finding 1, fix round 1)', () =>
     await waitFor(() => expect(result.current.state.tag).toBe('complete'))
     expect(claim).toHaveBeenCalledTimes(1)
     expect(submitSwap).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Final-review Finding 1 (CRITICAL): the test above passed even before
+   * this fix, because its `claim` stub never looked at the handle it was
+   * given — a wallet-path handle recovered from storage has no
+   * `swapId`/`blindedAddress` until something recovers them, and nothing on
+   * the old resume path ever did (`recoverIdentity` had exactly one call
+   * site in the whole codebase, inside `submit`). The real
+   * `claimWithRetry`/`claimSwapOutput` throws `handle.swapId is not set` on
+   * exactly this input, but a bare `vi.fn()` stub can't see that. This test
+   * makes the claim stub itself assert the identity is present when called,
+   * and additionally checks that the recovered identity was written back to
+   * storage BEFORE the claim ran, so a second reload skips recovery
+   * entirely (Fix 1(a)/(b)).
+   */
+  it('recovers identity (wait, then recoverIdentity) before claiming an identity-less handle resumed from storage, and re-persists it first', async () => {
+    savePendingClaim(pending) // pending.handle has no swapId/blindedAddress
+    let waitedForRequestTxBeforeIdentityCall = false
+    let identityOnClaim: { swapId?: string; blindedAddress?: string } | null = null
+    let persistedIdentityBeforeClaimResolved: string | null | undefined = null
+
+    const waitForTransaction = vi.fn(async (_deps: unknown, txId: string) => {
+      if (txId === 'at1req') waitedForRequestTxBeforeIdentityCall = true
+    })
+    const recoverIdentity = vi.fn(async () => {
+      // Must run only after the request transaction has been confirmed —
+      // `recoverSwapIdentity`'s real implementation throws "Could not read
+      // the swap id" for an unconfirmed transaction.
+      expect(waitedForRequestTxBeforeIdentityCall).toBe(true)
+      return { swapId: 'recovered-swap-id', blindedAddress: 'aleo1recoveredblinded' }
+    })
+    const claim = vi.fn(async (_deps: unknown, handle: { swapId?: string; blindedAddress?: string }) => {
+      identityOnClaim = { swapId: handle.swapId, blindedAddress: handle.blindedAddress }
+      persistedIdentityBeforeClaimResolved = loadPendingClaim(OWNER)?.handle.swapId
+      return { transactionId: 'at1claim', amountOut: 4_990n, amountRemaining: 0n }
+    })
+
+    const args = makeArgs({
+      effects: { fetchQuote: vi.fn(), submitSwap: vi.fn(), waitForTransaction, recoverIdentity, claim },
+    })
+
+    const { result } = renderHook(() => useSwapFlow(args as never))
+
+    await waitFor(() => expect(result.current.state.tag).toBe('complete'))
+
+    expect(recoverIdentity).toHaveBeenCalledTimes(1)
+    expect(identityOnClaim).toEqual({
+      swapId: 'recovered-swap-id',
+      blindedAddress: 'aleo1recoveredblinded',
+    })
+    expect(persistedIdentityBeforeClaimResolved).toBe('recovered-swap-id')
   })
 
   it('does not double-fire the automatic claim when the resume effect re-runs (e.g. tokens resolving after address)', async () => {
@@ -748,6 +801,56 @@ describe('useSwapFlow cross-instance claim dedup (Finding, fix round 2)', () => 
     const { result } = renderHook(() => useSwapFlow(args as never), { wrapper: StrictMode })
 
     await waitFor(() => expect(result.current.state.tag).toBe('complete'))
+    expect(claim).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * Final-review Finding 2 (Important): `submit` used to call `runClaim`
+   * directly, bypassing `startClaim` entirely — so the module-level
+   * `claimsInFlight` registry never learned about a claim that started on
+   * the ordinary first-time submit path, only ones that went through resume
+   * or retry. A remount mid-claim (the exact scenario the dedup tests above
+   * cover for the *resume* path) had nothing registered to check against,
+   * so the resume effect's own automatic attempt sailed straight through
+   * and fired a second, concurrent `claimSwapOutput` for the same handle.
+   */
+  it('a claim started by a first-time submit is registered too: unmount mid-claim then remount does not fire a second claim', async () => {
+    const claim = vi.fn(() => new Promise(() => {})) // never resolves — simulates a slow claim broadcast
+    const args = makeArgs({
+      effects: {
+        fetchQuote: vi.fn(async () => quote),
+        submitSwap: vi.fn(async () => handle),
+        waitForTransaction: vi.fn(async () => {}),
+        recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
+        claim,
+      },
+    })
+
+    // Instance A: a normal, first-time trade — quote, submit, request
+    // confirms, identity recovers — and its claim call hangs.
+    const instanceA = renderHook(() => useSwapFlow(args as never))
+    await toQuoted(instanceA.result)
+    act(() => {
+      instanceA.result.current.submit(inputs)
+    })
+    await waitFor(() => expect(claim).toHaveBeenCalledTimes(1))
+
+    // The claim never confirmed, so the pending claim persisted by submit is
+    // still on disk — exactly the state a remount would see.
+    expect(loadPendingClaim(OWNER)).not.toBeNull()
+
+    // A plain unmount (user navigates away) does not cancel A's outstanding
+    // claim promise; it is now orphaned but still "in flight" as far as the
+    // real wallet/chain are concerned.
+    instanceA.unmount()
+
+    // Instance B: fresh mount for the same wallet, same persisted claim. Its
+    // automatic resume trigger must be declined by the registry — if
+    // `submit` never registered `at1req`, this would start a second,
+    // concurrent `claimSwapOutput` call.
+    const instanceB = renderHook(() => useSwapFlow(args as never))
+    await waitFor(() => expect(instanceB.result.current.state.tag).toBe('outputFinalizing'))
+
     expect(claim).toHaveBeenCalledTimes(1)
   })
 })

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { POOL_KEY } from '../config'
+import { TransactionRejectedError } from './execute'
 import {
   WrongRouteError,
   assertPinnedPlan,
@@ -170,6 +171,12 @@ describe('classifyQuoteError', () => {
     const error = classifyQuoteError(new WrongRouteError('wrong-pool', 'nope'))
     expect(error.kind).toBe('terminal')
     expect(error.message).toMatch(/pool/i)
+  })
+
+  it('treats a rejected on-chain finalize as terminal, never advising a resume (Fix 4)', () => {
+    const error = classifyQuoteError(new TransactionRejectedError('at1req'))
+    expect(error.kind).toBe('terminal')
+    expect(error.message).not.toMatch(/resume/i)
   })
 
   it('treats thin liquidity as recoverable and asks for a smaller amount', () => {

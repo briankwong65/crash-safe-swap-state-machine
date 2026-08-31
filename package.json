@@ -1,7 +1,6 @@
 {
   "name": "shield-swap-trade-interface",
   "version": "0.1.0",
-  "main": "index.js",
   "directories": {
     "doc": "docs"
   },
@@ -14,7 +13,6 @@
     "test:watch": "vitest"
   },
   "keywords": [],
-  "license": "ISC",
   "private": true,
   "type": "module",
   "dependencies": {

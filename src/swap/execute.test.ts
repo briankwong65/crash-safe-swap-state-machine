@@ -1,6 +1,12 @@
 import { SwapOutputNotFinalizedError, deriveSwapId } from '@provablehq/shield-swap-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { claimWithRetry, recoverSwapIdentity, submitSwapRequest } from './execute'
+import {
+  TransactionRejectedError,
+  claimWithRetry,
+  recoverSwapIdentity,
+  submitSwapRequest,
+  waitForTransaction,
+} from './execute'
 
 vi.mock('@provablehq/shield-swap-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@provablehq/shield-swap-sdk')>()
@@ -97,6 +103,111 @@ describe('submitSwapRequest', () => {
       recordname: 'Token',
       filters: { amount: { gte: '250000000000000000u128' } },
     })
+  })
+})
+
+describe('waitForTransaction', () => {
+  const confirmedResponse = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+
+  it('reads the /transaction/confirmed/{id} endpoint, not the plain one', async () => {
+    const fetchImpl = vi.fn(async () =>
+      confirmedResponse({
+        status: 'accepted',
+        transaction: { execution: { transitions: [{ program: 'shield_swap.aleo' }] } },
+      }),
+    )
+
+    await waitForTransaction(
+      { client: {} as never, api: {} as never, fetchImpl, sleep: noSleep },
+      'at1req',
+    )
+
+    expect(fetchImpl).toHaveBeenCalledWith('https://api.provable.com/v2/testnet/transaction/confirmed/at1req')
+  })
+
+  it('resolves once the transaction is confirmed accepted with transitions (Fix 4: accepted, not merely readable)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      confirmedResponse({
+        status: 'accepted',
+        transaction: { execution: { transitions: [{ program: 'shield_swap.aleo' }] } },
+      }),
+    )
+
+    await expect(
+      waitForTransaction(
+        { client: {} as never, api: {} as never, fetchImpl, sleep: noSleep },
+        'at1req',
+      ),
+    ).resolves.toBeUndefined()
+  })
+
+  it('keeps polling while the transaction has not landed yet (404, then accepted)', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+      .mockResolvedValueOnce(
+        confirmedResponse({
+          status: 'accepted',
+          transaction: { execution: { transitions: [{ program: 'shield_swap.aleo' }] } },
+        }),
+      )
+
+    await waitForTransaction(
+      { client: {} as never, api: {} as never, fetchImpl, sleep: noSleep },
+      'at1req',
+      { attempts: 5, intervalMs: 0 },
+    )
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('throws TransactionRejectedError immediately on a rejected finalize, without exhausting the retry budget (Fix 4, CRITICAL)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      confirmedResponse({
+        status: 'rejected',
+        transaction: { execution: { transitions: [{ program: 'shield_swap.aleo' }] } },
+      }),
+    )
+
+    await expect(
+      waitForTransaction(
+        { client: {} as never, api: {} as never, fetchImpl, sleep: noSleep },
+        'at1req',
+        { attempts: 60 },
+      ),
+    ).rejects.toBeInstanceOf(TransactionRejectedError)
+
+    // A rejected finalize can never become accepted by waiting longer — the
+    // whole point of the fix is to stop treating "readable" as "confirmed",
+    // so this must not spend the full 60-attempt budget re-checking it.
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not treat a rejected transaction with real transitions as success (Fix 4, CRITICAL: readable is not accepted)', async () => {
+    // Before the fix, `transitions.length` alone was the confirmation
+    // signal — a REJECTED execution is still fully readable with real
+    // transitions, so this exact shape used to be declared a success.
+    const fetchImpl = vi.fn(async () =>
+      confirmedResponse({
+        status: 'rejected',
+        transaction: {
+          execution: {
+            transitions: [{ program: 'shield_swap.aleo', function: 'swap', outputs: [{ type: 'public', value: '1field' }] }],
+          },
+        },
+      }),
+    )
+
+    await expect(
+      waitForTransaction(
+        { client: {} as never, api: {} as never, fetchImpl, sleep: noSleep },
+        'at1req',
+      ),
+    ).rejects.toBeInstanceOf(TransactionRejectedError)
   })
 })
 
