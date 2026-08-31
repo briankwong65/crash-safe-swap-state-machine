@@ -74,9 +74,11 @@ two transactions, and tells the user not to resubmit while waiting.
 
 - Duplicate-claim protection is per tab; two tabs are separate JS heaps,
   uncovered.
-- `swapId` recovery prefers `deriveSwapId` when the handle has the needed
-  fields, throwing on mismatch with the heuristic rather than guessing;
-  the optional `@provablehq/sdk` peer isn't installed.
+- `swapId` recovery's live path reads the confirmed transaction (a
+  heuristic); `deriveSwapId`'s cross-check is currently INACTIVE — the
+  optional `@provablehq/sdk` peer it needs isn't installed, so it always
+  throws and that branch never runs. Installing the peer would activate it
+  as a second source of truth, throwing on mismatch rather than guessing.
 - One private record must cover the whole input amount; the UI explains
   this rather than combining records.
 - Only the one pinned pool is used, by requirement; a wrong or multi-hop

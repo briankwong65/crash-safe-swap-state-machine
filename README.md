@@ -112,16 +112,35 @@ These points are unverified from the development environment (no Chrome
 extension, no API key, no faucet funds were available there) and should be
 watched during the first live run:
 
-- The Aleo node's transaction endpoint path and response shape used by
-  `readTransaction` (`GET {ALEO_NODE_URL}/testnet/transaction/{txId}`) —
-  confirm it matches what `waitForTransaction` and `recoverSwapIdentity`
-  expect.
+- The Aleo node's transaction endpoint paths and response shapes used by
+  `execute.ts`. Both were confirmed live against
+  `https://api.provable.com/v2` using a known-good example
+  transactions: `GET .../testnet/transaction/{txId}` (used by
+  `recoverSwapIdentity`) returns `{ type, id, execution, fee }`, and `GET
+  .../testnet/transaction/confirmed/{txId}` (used by `waitForTransaction`,
+  Fix 4) returns `{ type, index, status, finalize, transaction }` where
+  `transaction` has the same shape as the plain endpoint. **Still needs
+  confirming**: both example transactions were `status: "accepted"` — no
+  genuinely REJECTED transaction was available to verify that the literal
+  value is exactly `"rejected"` on this endpoint (it matches
+  `@provablehq/aleo-types`'s `TransactionStatus` enum, but that enum may
+  belong to a different layer than this raw node response). Confirm this
+  against a real rejected transaction during the first live run before
+  trusting `waitForTransaction`'s rejection handling in production.
 - Whether the transition heuristics find the right `swapId` (the first
   public, field-typed output on the `shield_swap.aleo/swap` transition) and
   blinded recipient (the public address-typed input on that same transition).
-  If they disagree with `deriveSwapId`, the code throws rather than guessing —
-  install the optional `@provablehq/sdk` peer first if that happens, since
-  `deriveSwapId` needs it and is preferred whenever available.
+  The optional `@provablehq/sdk` peer `deriveSwapId` needs is not installed
+  in this project, so `deriveSwapId` currently always throws and the
+  derive/compare/throw-on-mismatch branch in `recoverSwapIdentity` is dead
+  code in the shipped configuration — reading the confirmed transaction (the
+  heuristic above) is the live path today, not a fallback from something
+  that runs first. Installing the peer would activate the cross-check
+  (derive, compare against the heuristic, throw on mismatch rather than
+  guessing) as a second source of truth. Both heuristics were confirmed
+  against a known-good example transactions on the live testnet
+  node (`https://api.provable.com/v2/testnet/transaction/{id}`) and land on
+  the correct values, which is why the peer was deliberately not installed.
 - The exact wording the DEX API uses for a thin-liquidity failure, so the
   "reduce the amount" hint actually matches it — one phrasing variant is
   currently not covered by the recognized hints (see `LIQUIDITY_HINTS` in
