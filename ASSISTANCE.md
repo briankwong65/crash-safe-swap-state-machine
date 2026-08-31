@@ -46,34 +46,62 @@ working fallback (`src/wallet/useBalances.ts`) calls `client.requestRecords`
 directly and parses each record's plaintext with `@provablehq/veil-core`'s
 `parseRecord`. Separately, the plan proposed recovering `swapId` by guessing
 it from transaction output shape; the SDK ships `deriveSwapId` to compute it
-exactly, which the code now prefers when the swap handle carries the fields
-`deriveSwapId` needs, falling back to the shape heuristic (and throwing on
-disagreement) only when it doesn't.
+exactly, and the code now prefers it, falling back to the shape heuristic —
+and throwing on disagreement — otherwise. In the shipped configuration that
+preference is dormant: `deriveSwapId` needs the optional `@provablehq/sdk`
+peer, which is not installed, so the heuristic is the live path. It was
+checked against the project's example transaction and then against both
+live swaps.
 
 ## Verification
 
 - `npm run typecheck` (`tsc --noEmit`) — clean.
-- `npm test` (`vitest run`) — 190/190 passing, mocking the wallet adapter,
+- `npm test` (`vitest run`) — 232/232 passing, mocking the wallet adapter,
   the SDK's `planSwap`/`swap`/`claimSwapOutput`, and `fetch` at the module
   boundary; no test drives a real wallet or network call.
 - `npm run build` — production build succeeds.
 - Manual reading of the relevant SDK source (`node_modules/@provablehq/...`)
   whenever a plan assumption about a type or method needed confirming, as
   described above.
-- The live testnet flow — connecting Shield Wallet, funding from the
-  faucet, completing an ALEO → ETH and an ETH → ALEO swap and claim — was
-  **not** performed from this development environment. There was no Chrome
-  browser with the Shield Wallet extension, no `ss_...` API key, and no
-  faucet-funded address available here. Everything above is the extent of
-  what was verified; the live flow is unverified beyond code review and the
-  mocked test suite.
+- The live testnet flow was run separately in Chrome with the Shield Wallet
+  extension: both directions completed, and all four transactions in
+  `README.md` are confirmed `accepted` on chain. It could not be run from
+  the development environment, which has no browser extension, API key, or
+  faucet-funded address.
+
+## What the mocked tests did not catch
+
+The live run is where most of the real defects surfaced. 232 passing tests,
+a clean typecheck and a working production build coexisted with seven bugs,
+each at a boundary between this code and something external:
+
+1. The dev API base URL was relative; the SDK builds requests with
+   single-argument `new URL()`, which rejects a relative string.
+2. Shield returns records as `recordView.fields`; the SDK's
+   `getPrivateBalances` reads only `recordPlaintext`, so balances read zero
+   against a real wallet holding real records.
+3. The wallet adapter transport refuses chain reads, so every quote failed
+   until an HTTP transport was added as a fallback.
+4. That HTTP transport defaults to mainnet, where the pinned pool does not
+   exist.
+5. The Aleo node needed a dev proxy for the same CORS reason as the DEX API.
+6. `swap()` returns Shield's own request handle, not an Aleo transaction id;
+   the on-chain id has to be resolved through the adapter afterwards.
+7. A write's `imports` map needs each token's AMM program, not the program
+   its records live in.
+
+None was reachable by the test suite, because the mocks encoded assumptions
+about the SDK and the wallet rather than their real behaviour — so the tests
+agreed with the code and proved nothing about the integration. Contract
+tests against those boundaries are named as the next improvement in
+`DECISIONS.md`.
 
 ---
 
-**Note to the submitter:** review and edit this file before submitting it —
-it describes what happened during agent-assisted development but you are
-the one accountable for every line. The live testnet runs and the four
-explorer links in `README.md` are yours to complete: connect Shield Wallet
-in Chrome, fund the wallet from the faucet, run one ALEO → ETH and one
-ETH → ALEO swap and claim, and paste the four resulting transaction links
-into `README.md` in place of the placeholders.
+**Note to the submitter:** this file was drafted during agent-assisted
+development and states the facts of what happened, but it is written about
+the work rather than by you. Rewrite it in your own voice before submitting
+— particularly the judgement calls: which AI output you rejected and why,
+what you checked and how, and what you would do differently. You are
+accountable for every line, and this is the document a reviewer will use to
+test whether you can explain the code you are submitting.
