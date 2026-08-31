@@ -76,22 +76,15 @@ says not to resubmit while waiting.
   dev-only console helper (`src/dev/shieldCredits.ts`) converts them for
   testing; the app ships no such feature, faucets being out of scope.
 
-## What the tests could not catch
-
-Both directions completed on testnet (links in `README.md`). 232 mocked
-tests, a clean typecheck and a production build all passed while seven
-defects sat in the code, each at a boundary with something external: a
-relative base URL the SDK's `new URL()` rejected; Shield returning
-`recordView` where the SDK reads `recordPlaintext`; a wallet transport
-refusing chain reads; an HTTP transport defaulting to mainnet; the node
-needing a CORS proxy; `swap()` returning a wallet handle, not a
-transaction id; and imports needing AMM programs, not record programs.
-
 ## Next improvement
 
-Contract tests at the integration boundaries. Every defect above passed the
-mocked suite because the mocks encoded my assumptions rather than the SDK's
-and the wallet's real behaviour. A fake adapter returning Shield's actual
+Contract tests at the integration boundaries. Both directions completed on
+testnet (links in `README.md`), and that live run exposed seven defects the
+232 mocked tests, a clean typecheck and a working build had all passed over
+— every one at a boundary with the SDK, the wallet or the node
+(`ASSISTANCE.md` lists them). The mocks encoded my assumptions rather than
+those systems' real behaviour, so they agreed with the code and proved
+nothing about the integration. A fake adapter returning Shield's actual
 shapes — `recordView`, a `shield_…` request handle — plus assertions that
-constructed URLs are absolute and network-qualified would have caught all
-of them before a live run.
+constructed URLs are absolute and network-qualified would have caught them
+before a live run.

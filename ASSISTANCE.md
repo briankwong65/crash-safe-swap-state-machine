@@ -92,9 +92,9 @@ each at a boundary between this code and something external:
 
 None was reachable by the test suite, because the mocks encoded assumptions
 about the SDK and the wallet rather than their real behaviour — so the tests
-agreed with the code and proved nothing about the integration. Contract
-tests against those boundaries are named as the next improvement in
-`DECISIONS.md`.
+agreed with the code and proved nothing about the integration. Contract tests against those boundaries are
+named as the next improvement in `DECISIONS.md`, which does not repeat this
+list.
 
 ## Judgement calls I made
 
