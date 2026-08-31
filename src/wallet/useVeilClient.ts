@@ -1,4 +1,5 @@
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react'
+import { Network } from '@provablehq/aleo-types'
 import { shieldSwapActions } from '@provablehq/shield-swap-sdk'
 import { fromWalletAdapter } from '@provablehq/veil-aleo-wallet-adapter'
 import { createWalletClient, fallback, http } from '@provablehq/veil-core'
@@ -35,7 +36,16 @@ export function useVeilClient() {
     // Falling back to the node over HTTP keeps every write on the wallet while
     // letting reads through, which is the arrangement the transport's own error
     // message prescribes.
-    const transport = fallback([walletTransport, http(ALEO_NODE_URL)])
+    // The HTTP transport maps each method to a path under `{url}/{network}`,
+    // so the network must be stated explicitly — left to its default it reads a
+    // different chain and reports the pinned pool as nonexistent.
+    const transport = fallback([
+      walletTransport,
+      http(ALEO_NODE_URL, {
+        network: Network.TESTNET,
+        fetchFn: globalThis.fetch.bind(globalThis),
+      }),
+    ])
 
     const client = createWalletClient({ account, transport }).extend(
       shieldSwapActions({ api }),
