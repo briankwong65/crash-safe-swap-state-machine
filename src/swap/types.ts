@@ -68,8 +68,8 @@ export type SwapFlowState =
       tokenOutDecimals: number
       tokenOutSymbol: string
     }
-  | { tag: 'recoverableError'; error: FlowError; requestTxId?: string }
-  | { tag: 'terminalError'; error: FlowError; requestTxId?: string }
+  | { tag: 'recoverableError'; error: FlowError; requestTxId?: string; claimTxId?: string }
+  | { tag: 'terminalError'; error: FlowError; requestTxId?: string; claimTxId?: string }
 
 export type SwapFlowEvent =
   | { type: 'INPUT_CHANGED' }

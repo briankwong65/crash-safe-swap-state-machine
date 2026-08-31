@@ -28,6 +28,11 @@ function requestIdOf(state: SwapFlowState): string | undefined {
   return 'requestTxId' in state ? state.requestTxId : undefined
 }
 
+/** The claim id, where the current state carries one. */
+function claimIdOf(state: SwapFlowState): string | undefined {
+  return 'claimTxId' in state ? state.claimTxId : undefined
+}
+
 /**
  * The whole trade lifecycle as one pure transition function.
  *
@@ -41,11 +46,23 @@ export function swapReducer(
 ): SwapFlowState {
   switch (event.type) {
     case 'RESET':
-      return initialState
+      // Never discard a trade in flight: RESET only applies once the flow
+      // has settled (idle, quoted, an error, or complete).
+      return isBusy(state) ? state : initialState
 
     case 'INPUT_CHANGED':
       // A quote is only ever valid for the inputs it was fetched with.
-      return isBusy(state) ? state : initialState
+      if (isBusy(state)) return state
+      if (
+        (state.tag === 'recoverableError' || state.tag === 'terminalError') &&
+        state.requestTxId !== undefined
+      ) {
+        // A swap was submitted and its output has not been claimed yet.
+        // Wiping the state here would strand the user's funds behind a
+        // handle nothing else references.
+        return state
+      }
+      return initialState
 
     case 'QUOTE_REQUESTED':
       return isBusy(state) ? state : { tag: 'quoting', inputs: event.inputs }
@@ -125,10 +142,13 @@ export function swapReducer(
         : state
 
     case 'FAILED': {
+      // A finished trade cannot subsequently fail.
+      if (state.tag === 'complete') return state
       const requestTxId = requestIdOf(state)
+      const claimTxId = claimIdOf(state)
       return event.error.kind === 'terminal'
-        ? { tag: 'terminalError', error: event.error, requestTxId }
-        : { tag: 'recoverableError', error: event.error, requestTxId }
+        ? { tag: 'terminalError', error: event.error, requestTxId, claimTxId }
+        : { tag: 'recoverableError', error: event.error, requestTxId, claimTxId }
     }
   }
 }

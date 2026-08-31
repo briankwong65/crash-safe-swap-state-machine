@@ -56,14 +56,20 @@ describe('duplicate submission', () => {
     expect(swapReducer(state, { type: 'SUBMIT', inputs })).toEqual(state)
   })
 
-  it.each(busyStates)('ignores CLAIM while in $tag', (state) => {
-    const next = swapReducer(state, { type: 'CLAIM' })
-    // CLAIM is not a no-op from every busy state: it is the legitimate
-    // advancing transition out of 'outputFinalizing' (asserted by the happy
-    // path below), and 'awaitingClaimApproval' is where that transition has
-    // already landed.
-    if (state.tag === 'awaitingClaimApproval' || state.tag === 'outputFinalizing') return
-    expect(next).toEqual(state)
+  // 'outputFinalizing' is deliberately excluded here: CLAIM is the
+  // legitimate advancing transition out of it (asserted by the happy path
+  // below), not a no-op, so it belongs in that test, not this one. Every
+  // state actually iterated here must produce a genuine no-op assertion —
+  // no early returns — including 'awaitingClaimApproval', the double-click-
+  // the-Claim-button case this guard exists for.
+  const claimNoOpStates = busyStates.filter((state) => state.tag !== 'outputFinalizing')
+
+  it.each(claimNoOpStates)('ignores CLAIM while in $tag', (state) => {
+    expect(swapReducer(state, { type: 'CLAIM' })).toEqual(state)
+  })
+
+  it.each(busyStates)('ignores RESET while in $tag', (state) => {
+    expect(swapReducer(state, { type: 'RESET' })).toEqual(state)
   })
 
   it('treats idle and quoted as not busy', () => {
@@ -165,7 +171,116 @@ describe('resume and failure', () => {
     expect(state.tag).toBe('terminalError')
   })
 
-  it('RESET returns to idle from any state', () => {
+  it('ignores FAILED once the trade is complete', () => {
+    const complete: SwapFlowState = {
+      tag: 'complete',
+      requestTxId: 'at1req',
+      claimTxId: 'at1claim',
+      amountOut: 4_990n,
+      tokenOutDecimals: 18,
+      tokenOutSymbol: 'ETH',
+    }
+    const state = swapReducer(complete, {
+      type: 'FAILED',
+      error: { message: 'too late', kind: 'terminal' },
+    })
+    expect(state).toEqual(complete)
+  })
+
+  it('preserves an in-flight claimTxId when FAILED fires from claimPending', () => {
+    const pending: SwapFlowState = {
+      tag: 'claimPending',
+      quote,
+      requestTxId: 'at1req',
+      claimTxId: 'at1claim',
+    }
+    const state = swapReducer(pending, {
+      type: 'FAILED',
+      error: { message: 'claim indexer timeout', kind: 'recoverable' },
+    })
+    expect(state).toEqual({
+      tag: 'recoverableError',
+      error: { message: 'claim indexer timeout', kind: 'recoverable' },
+      requestTxId: 'at1req',
+      claimTxId: 'at1claim',
+    })
+  })
+
+  it.each(['recoverableError', 'terminalError'] as const)(
+    'keeps a %s state with an outstanding requestTxId on INPUT_CHANGED',
+    (tag) => {
+      const errorState: SwapFlowState = {
+        tag,
+        error: { message: 'node unreachable', kind: 'recoverable' },
+        requestTxId: 'at1req',
+      }
+      expect(swapReducer(errorState, { type: 'INPUT_CHANGED' })).toEqual(errorState)
+    },
+  )
+
+  it('drops an error state with no requestTxId back to idle on INPUT_CHANGED', () => {
+    const errorState: SwapFlowState = {
+      tag: 'terminalError',
+      error: { message: 'route used the wrong pool', kind: 'terminal' },
+    }
+    expect(swapReducer(errorState, { type: 'INPUT_CHANGED' })).toEqual({ tag: 'idle' })
+  })
+
+  it('RESET returns to idle from a non-busy state', () => {
     expect(swapReducer(quoted, { type: 'RESET' })).toEqual({ tag: 'idle' })
+  })
+
+  it('RESET still returns to idle from complete', () => {
+    const complete: SwapFlowState = {
+      tag: 'complete',
+      requestTxId: 'at1req',
+      claimTxId: 'at1claim',
+      amountOut: 4_990n,
+      tokenOutDecimals: 18,
+      tokenOutSymbol: 'ETH',
+    }
+    expect(swapReducer(complete, { type: 'RESET' })).toEqual({ tag: 'idle' })
+  })
+
+  it('breaks the reviewer-found double-claim escape sequence', () => {
+    // claimPending{claimTxId: 'claim1'} -> FAILED -> INPUT_CHANGED -> idle
+    // -> RESUME(same requestTxId) -> CLAIM -> CLAIM_SUBMITTED('claim2')
+    // used to land in a second, independent claimPending with claim1's id
+    // gone. It must now be blocked at the very first step: FAILED preserves
+    // claimTxId, and INPUT_CHANGED refuses to clear a state that still
+    // carries a requestTxId, so none of the later events ever find a state
+    // they're legal from.
+    const pending: SwapFlowState = {
+      tag: 'claimPending',
+      quote,
+      requestTxId: 'at1req',
+      claimTxId: 'claim1',
+    }
+
+    let state = swapReducer(pending, {
+      type: 'FAILED',
+      error: { message: 'claim broadcast failed', kind: 'recoverable' },
+    })
+    expect(state).toEqual({
+      tag: 'recoverableError',
+      error: { message: 'claim broadcast failed', kind: 'recoverable' },
+      requestTxId: 'at1req',
+      claimTxId: 'claim1',
+    })
+
+    state = swapReducer(state, { type: 'INPUT_CHANGED' })
+    expect(state.tag).toBe('recoverableError')
+
+    state = swapReducer(state, { type: 'RESUME', quote, requestTxId: 'at1req' })
+    expect(state.tag).toBe('recoverableError')
+
+    state = swapReducer(state, { type: 'CLAIM' })
+    expect(state.tag).toBe('recoverableError')
+
+    state = swapReducer(state, { type: 'CLAIM_SUBMITTED', claimTxId: 'claim2' })
+    expect(state.tag).toBe('recoverableError')
+    if (state.tag === 'recoverableError') {
+      expect(state.claimTxId).toBe('claim1')
+    }
   })
 })
