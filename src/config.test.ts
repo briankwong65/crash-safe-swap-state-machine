@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { POOL_KEY, PROGRAMS } from './config'
+import { DEX_API_BASE_URL, POOL_KEY, PROGRAMS } from './config'
 
 describe('config', () => {
   it('pins the single permitted pool key', () => {
@@ -15,5 +15,19 @@ describe('config', () => {
       'test_arc20_eth.aleo',
       'test_arc20_multisig_core.aleo',
     ])
+  })
+})
+
+describe('DEX_API_BASE_URL', () => {
+  it('is absolute, because the SDK builds requests with single-argument new URL()', () => {
+    expect(() => new URL(`${DEX_API_BASE_URL}/tokens`)).not.toThrow()
+  })
+
+  it('keeps the /shield-api proxy path in dev so CORS is still avoided', () => {
+    if (import.meta.env.DEV) {
+      expect(DEX_API_BASE_URL).toContain('/shield-api')
+    } else {
+      expect(DEX_API_BASE_URL).toBe('https://api.testnet.swap.shield.fi')
+    }
   })
 })

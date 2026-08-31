@@ -4,13 +4,26 @@ export const POOL_KEY =
 
 export const ALEO_NODE_URL = 'https://api.provable.com/v2'
 
+export const DEX_API_ORIGIN = 'https://api.testnet.swap.shield.fi'
+
 /**
  * Dev requests go through the Vite proxy to avoid browser CORS; a production
  * build talks to the service directly.
+ *
+ * The dev value must be ABSOLUTE, not the bare `/shield-api` path. The SDK
+ * builds every request as `new URL(this.baseUrl + path)`, and single-argument
+ * `URL()` rejects a relative string with "Failed to construct 'URL': Invalid
+ * URL" — which took down every inherited ApiClient method (getTokens, getPools,
+ * getSwap) while our own getRoute override, which hands a relative path
+ * straight to fetch, kept working. Prefixing the current origin keeps the Vite
+ * proxy in the path, so CORS is still avoided.
  */
-export const DEX_API_BASE_URL = import.meta.env.DEV
-  ? '/shield-api'
-  : 'https://api.testnet.swap.shield.fi'
+function devApiBaseUrl(): string {
+  const origin = globalThis.location?.origin
+  return origin ? `${origin}/shield-api` : DEX_API_ORIGIN
+}
+
+export const DEX_API_BASE_URL = import.meta.env.DEV ? devApiBaseUrl() : DEX_API_ORIGIN
 
 export const EXPLORER_BASE_URL = 'https://testnet.explorer.provable.com'
 
