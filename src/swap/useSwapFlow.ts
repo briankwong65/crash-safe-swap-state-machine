@@ -54,6 +54,47 @@ function tokensFor(
 }
 
 /**
+ * Claims in flight, keyed by `requestTxId`, at MODULE scope rather than a
+ * ref.
+ *
+ * A plain React unmount does not cancel an in-progress `runClaim` promise —
+ * nothing aborts it, so it keeps running orphaned in the background. A
+ * per-instance `inFlight` ref cannot see that: a fresh instance (e.g. the
+ * user navigates away and back, remounting this hook for the same wallet)
+ * starts with `inFlight.current === false` even though an earlier
+ * instance's claim for the very same `requestTxId` — a real, signed
+ * on-chain `claimSwapOutput` call — is still outstanding. This set is what
+ * makes that visible across instances within the same JS heap.
+ *
+ * Module scope is deliberately the right level and no more: it survives an
+ * unmount/remount within one live session (the failing case), and a real
+ * browser reload clears it for free, because the reload destroys the heap
+ * — the orphaned promise died with it, so there is nothing left to guard
+ * against there. This is NOT a cross-tab lock: two tabs are separate heaps,
+ * and a `localStorage`-based lease would need an expiry, and a stale lease
+ * would block genuine crash recovery on exactly the path whose purpose is
+ * to avoid stranding funds — strictly worse than the race it would prevent.
+ * That limitation is intentional and out of scope here.
+ */
+const claimsInFlight = new Set<string>()
+
+/**
+ * Test-only escape hatch: clears the module-level registry above.
+ *
+ * Real usage never needs this — the registry is deliberately keyed by
+ * `requestTxId` and cleaned up in `finally` on every real claim attempt.
+ * Tests need it because this module (and therefore `claimsInFlight`) is
+ * loaded once per test FILE, not once per test CASE, and several tests
+ * deliberately use a claim effect that never resolves (to freeze the
+ * machine at a specific state for assertions) — which means its `finally`
+ * never runs and the id would otherwise leak into later tests that reuse
+ * the same fixture `requestTxId`.
+ */
+export function __resetClaimsInFlightForTests(): void {
+  claimsInFlight.clear()
+}
+
+/**
  * Drives the machine: every side effect runs here and reports back as an event.
  *
  * The reducer decides what is legal; this hook only asks. That is why a double
@@ -121,6 +162,36 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
     [deps, args.tokens, args.onClaimed],
   )
 
+  /**
+   * The single entry point that actually starts a claim, used by both the
+   * automatic mount-time trigger and the manual `resumeClaim`. Guarded
+   * twice: `inFlight` (this hook instance) and `claimsInFlight` (module
+   * scope, every instance in this JS heap) — the two are complementary,
+   * not redundant. `inFlight` alone would miss the orphaned-promise case
+   * above; `claimsInFlight` alone would miss nothing extra here, but
+   * keeping `inFlight` is what lets every other call site (`submit`,
+   * `busy`) keep asking a single, cheap, per-instance ref rather than
+   * reaching into module state.
+   *
+   * Registers before `runClaim` starts (not after), and always cleans up
+   * in `finally` — including on failure — so a genuine retry later is
+   * never permanently blocked by its own earlier, failed attempt.
+   */
+  const startClaim = useCallback(
+    (handle: SwapHandle, direction: QuoteInputs['direction'], requestTxId: string) => {
+      if (inFlight.current || claimsInFlight.has(requestTxId)) return
+      inFlight.current = true
+      claimsInFlight.add(requestTxId)
+      void runClaim(handle, direction)
+        .catch(fail)
+        .finally(() => {
+          inFlight.current = false
+          claimsInFlight.delete(requestTxId)
+        })
+    },
+    [runClaim, fail],
+  )
+
   // Resume a persisted claim, but only for the wallet that made it.
   useEffect(() => {
     if (!args.address) {
@@ -165,26 +236,23 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
     // `resumeClaim`) — so nothing else would ever drive it forward. The
     // claim must start itself here.
     //
-    // `autoResumeAttempted` bounds this to exactly one attempt per mounted
-    // instance regardless of how many times this effect re-runs (tokens
-    // resolving later, an unrelated client/api reconnect); `inFlight` is the
-    // same guard every other entry point (`submit`, `resumeClaim`) uses, so
-    // this can never overlap a manual call or start twice concurrently. If
-    // the automatic attempt fails, `fail` lands the machine in an error
-    // state with `requestTxId` set, and the user finishes it from there via
-    // the manual "Resume claim" button — this does not retry silently
-    // forever.
-    if (!autoResumeAttempted.current && !inFlight.current) {
+    // `autoResumeAttempted` bounds THIS INSTANCE to at most one automatic
+    // attempt, regardless of how many times this effect re-runs (tokens
+    // resolving later, an unrelated client/api reconnect). It does not by
+    // itself prevent a second instance (e.g. the user navigates away and
+    // back, remounting this hook for the same wallet while an earlier
+    // instance's claim promise is still orphaned in the background) from
+    // also attempting one — `startClaim`'s `claimsInFlight` registry is
+    // what catches that, across instances. If the automatic attempt fails,
+    // `fail` lands the machine in an error state with `requestTxId` set,
+    // and the user finishes it from there via the manual "Resume claim"
+    // button — this does not retry silently forever.
+    if (!autoResumeAttempted.current) {
       autoResumeAttempted.current = true
-      inFlight.current = true
-      void runClaim(handle, own.direction)
-        .catch(fail)
-        .finally(() => {
-          inFlight.current = false
-        })
+      startClaim(handle, own.direction, own.requestTxId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [args.address, args.tokens, runClaim, fail])
+  }, [args.address, args.tokens, startClaim])
 
   const requestQuote = useCallback(
     (inputs: QuoteInputs) => {
@@ -288,11 +356,19 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
    * so `runClaim`'s own `CLAIM` dispatch lands somewhere it is legal and the
    * UI reflects what is actually happening.
    *
-   * Every branch is guarded by `inFlight` (checked here, not just left to
-   * the reducer) so this function never starts the claim effect while
-   * nothing has actually changed — which would reopen the exact "effect
-   * running under a frozen display" gap this exists to close, and would
-   * risk a second, overlapping claim call racing the automatic one.
+   * Guarded by `inFlight` up front (this instance) so the function never
+   * starts the claim effect while nothing has actually changed — which
+   * would reopen the exact "effect running under a frozen display" gap
+   * this exists to close. The error-state branch additionally checks
+   * `claimsInFlight` (module scope) BEFORE dispatching `RETRY_CLAIM`: if
+   * some other instance's orphaned claim for this same `requestTxId` is
+   * still outstanding, `startClaim` would decline to start a second one
+   * anyway, and dispatching the machine into `outputFinalizing` right
+   * before that happens would leave the display sitting on a state nothing
+   * is actually driving forward — the very bug this whole mechanism exists
+   * to prevent. `outputFinalizing` itself needs no such pre-check: it
+   * dispatches nothing before calling `startClaim`, so a decline there is
+   * silently, safely a no-op.
    */
   const resumeClaim = useCallback(() => {
     const handle = handleRef.current
@@ -301,28 +377,18 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
 
     if (state.tag === 'outputFinalizing') {
       // CLAIM is already legal here; no RETRY_CLAIM needed.
-      inFlight.current = true
-      void runClaim(handle, direction)
-        .catch(fail)
-        .finally(() => {
-          inFlight.current = false
-        })
+      startClaim(handle, direction, state.requestTxId)
       return
     }
 
-    const canRetryFromError =
-      (state.tag === 'recoverableError' || state.tag === 'terminalError') &&
-      state.requestTxId !== undefined
-    if (!canRetryFromError) return
+    if (state.tag !== 'recoverableError' && state.tag !== 'terminalError') return
+    const requestTxId = state.requestTxId
+    if (requestTxId === undefined) return
+    if (claimsInFlight.has(requestTxId)) return
 
     dispatch({ type: 'RETRY_CLAIM' })
-    inFlight.current = true
-    void runClaim(handle, direction)
-      .catch(fail)
-      .finally(() => {
-        inFlight.current = false
-      })
-  }, [runClaim, fail, state])
+    startClaim(handle, direction, requestTxId)
+  }, [state, startClaim])
 
   const reset = useCallback(() => {
     // Only ever clear a claim the connected wallet itself owns.

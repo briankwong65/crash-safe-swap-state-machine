@@ -1,9 +1,10 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@provablehq/shield-swap-sdk'
 import { loadPendingClaim, savePendingClaim, serializeHandle } from './pendingClaim'
 import type { PendingClaim, Quote } from './types'
-import { useSwapFlow } from './useSwapFlow'
+import { __resetClaimsInFlightForTests, useSwapFlow } from './useSwapFlow'
 
 const OWNER = 'aleo1owner'
 const OTHER = 'aleo1other'
@@ -63,6 +64,16 @@ function makeArgs(overrides: Record<string, unknown> = {}) {
     ...overrides,
   }
 }
+
+// The claims-in-flight registry (Task 10 fix round 2) is module scope by
+// design — it must survive an unmount/remount within one JS heap, which is
+// exactly the race it exists to close. That also means it persists across
+// test CASES within this one test FILE (the module is loaded once), so it
+// must be cleared before every test — several tests below deliberately use
+// a never-resolving claim effect to freeze the machine for assertions,
+// which would otherwise leak a registered requestTxId into later tests
+// that reuse the same fixture id.
+beforeEach(() => __resetClaimsInFlightForTests())
 
 describe('useSwapFlow resume', () => {
   beforeEach(() => localStorage.clear())
@@ -590,5 +601,153 @@ describe('useSwapFlow blockedByOtherWallet clears on disconnect (Finding 3, fix 
     rerender({ ...args, address: null } as never)
 
     await waitFor(() => expect(result.current.blockedByOtherWallet).toBeNull())
+  })
+})
+
+/**
+ * Fix round 2 (Important, new): `autoResumeAttempted` and `inFlight` are
+ * both `useRef`s, scoped to a single hook instance. A plain React unmount
+ * (the user navigates away — not a browser reload) does not cancel an
+ * in-progress `runClaim` promise; it keeps running orphaned in the
+ * background. Remounting this hook for the same wallet (fresh refs, same
+ * persisted claim) used to auto-fire a SECOND, concurrent `claim()` call for
+ * the same `requestTxId` — two real, signed on-chain `claimSwapOutput`
+ * submissions in flight for one handle. The module-level `claimsInFlight`
+ * registry closes this: it survives the unmount (module scope, not a ref)
+ * and is checked by `startClaim` on both the automatic and manual paths.
+ */
+describe('useSwapFlow cross-instance claim dedup (Finding, fix round 2)', () => {
+  beforeEach(() => localStorage.clear())
+
+  it('unmounting mid-claim then remounting with the same pending claim does not start a second automatic claim', async () => {
+    savePendingClaim(pending)
+    // Shared across both instances: this is what makes it meaningful to
+    // assert a single total call count rather than "once per instance".
+    const claim = vi.fn(() => new Promise(() => {})) // simulates a slow RPC that never resolves in this test
+    const args = makeArgs({
+      effects: {
+        fetchQuote: vi.fn(),
+        submitSwap: vi.fn(),
+        waitForTransaction: vi.fn(async () => {}),
+        recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
+        claim,
+      },
+    })
+
+    // Instance A: mounts, auto-fires the claim, and the call hangs — exactly
+    // the "slow RPC" window the finding describes.
+    const instanceA = renderHook(() => useSwapFlow(args as never))
+    await waitFor(() => expect(claim).toHaveBeenCalledTimes(1))
+
+    // A plain unmount — e.g. the user navigates away. Nothing aborts A's
+    // outstanding runClaim promise; it is now orphaned but still running,
+    // and still holds `at1req` in the module-level registry.
+    instanceA.unmount()
+
+    // The claim was never confirmed, so CLAIM_CONFIRMED never fired and the
+    // pending claim is still exactly where it was.
+    expect(loadPendingClaim(OWNER)).not.toBeNull()
+
+    // Instance B: a fresh mount for the same wallet — fresh `inFlight` and
+    // `autoResumeAttempted` refs, same persisted claim. Its own automatic
+    // trigger attempts to start a claim too.
+    const instanceB = renderHook(() => useSwapFlow(args as never))
+    await waitFor(() => expect(instanceB.result.current.state.tag).toBe('outputFinalizing'))
+
+    // B's automatic attempt must be declined by the registry: A's claim
+    // call for the same requestTxId is still outstanding.
+    expect(claim).toHaveBeenCalledTimes(1)
+  })
+
+  it('unmounting mid-claim then remounting and calling resumeClaim() manually does not start a second claim either', async () => {
+    savePendingClaim(pending)
+    const claim = vi.fn(() => new Promise(() => {}))
+    const args = makeArgs({
+      effects: {
+        fetchQuote: vi.fn(),
+        submitSwap: vi.fn(),
+        waitForTransaction: vi.fn(async () => {}),
+        recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
+        claim,
+      },
+    })
+
+    const instanceA = renderHook(() => useSwapFlow(args as never))
+    await waitFor(() => expect(claim).toHaveBeenCalledTimes(1))
+    instanceA.unmount()
+
+    const instanceB = renderHook(() => useSwapFlow(args as never))
+    await waitFor(() => expect(instanceB.result.current.state.tag).toBe('outputFinalizing'))
+    // B's own automatic attempt already declined (previous test covers
+    // this); now exercise the manual entry point explicitly too.
+    act(() => {
+      instanceB.result.current.resumeClaim()
+    })
+
+    // Still just the one outstanding call from instance A — resumeClaim's
+    // outputFinalizing branch goes through the same startClaim registry
+    // check, so it declines exactly like the automatic trigger did.
+    expect(claim).toHaveBeenCalledTimes(1)
+    expect(instanceB.result.current.state.tag).toBe('outputFinalizing')
+  })
+
+  it('releases the registry entry after a claim fails, so a subsequent genuine retry can still proceed', async () => {
+    savePendingClaim(pending)
+    let callCount = 0
+    const claim = vi.fn(async () => {
+      callCount += 1
+      if (callCount === 1) throw new Error('claim broadcast failed')
+      return { transactionId: 'at1claim', amountOut: 4_990n, amountRemaining: 0n }
+    })
+    const args = makeArgs({
+      effects: {
+        fetchQuote: vi.fn(),
+        submitSwap: vi.fn(),
+        waitForTransaction: vi.fn(async () => {}),
+        recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
+        claim,
+      },
+    })
+
+    const { result } = renderHook(() => useSwapFlow(args as never))
+
+    // The automatic attempt fails — if the registry entry were not released
+    // in `finally`, this id would be wedged forever and the retry below
+    // would be silently declined, stranding the funds this whole mechanism
+    // exists to protect.
+    await waitFor(() =>
+      expect(result.current.state).toMatchObject({ tag: 'recoverableError', requestTxId: 'at1req' }),
+    )
+    expect(claim).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      result.current.resumeClaim()
+    })
+
+    await waitFor(() => expect(result.current.state.tag).toBe('complete'))
+    expect(claim).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not double-fire the automatic claim under React.StrictMode (which double-invokes effects in dev)', async () => {
+    savePendingClaim(pending)
+    const claim = vi.fn(async () => ({
+      transactionId: 'at1claim',
+      amountOut: 4_990n,
+      amountRemaining: 0n,
+    }))
+    const args = makeArgs({
+      effects: {
+        fetchQuote: vi.fn(),
+        submitSwap: vi.fn(),
+        waitForTransaction: vi.fn(async () => {}),
+        recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
+        claim,
+      },
+    })
+
+    const { result } = renderHook(() => useSwapFlow(args as never), { wrapper: StrictMode })
+
+    await waitFor(() => expect(result.current.state.tag).toBe('complete'))
+    expect(claim).toHaveBeenCalledTimes(1)
   })
 })
