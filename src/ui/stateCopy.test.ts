@@ -1,6 +1,9 @@
+import { render, screen } from '@testing-library/react'
+import { createElement } from 'react'
 import { describe, expect, it } from 'vitest'
 import type { Quote, SwapFlowState } from '../swap/types'
 import { describeState } from './stateCopy'
+import { StatusPanel } from './StatusPanel'
 
 const quote: Quote = {
   inputs: { direction: 'aleoToEth', amountRaw: 100_000n, slippageBps: 50 },
@@ -82,5 +85,100 @@ describe('describeState', () => {
         tokenOutSymbol: 'ETH',
       }).step,
     ).toBe(4)
+  })
+
+  it('reports step 3 for an error state whose claim was already submitted', () => {
+    expect(
+      describeState({
+        tag: 'recoverableError',
+        error: { message: 'x', kind: 'recoverable' },
+        requestTxId: 'at1req',
+        claimTxId: 'at1claim',
+      }).step,
+    ).toBe(3)
+    expect(
+      describeState({
+        tag: 'terminalError',
+        error: { message: 'x', kind: 'terminal' },
+        requestTxId: 'at1req',
+        claimTxId: 'at1claim',
+      }).step,
+    ).toBe(3)
+  })
+
+  it('reports step 2 for an error state with only a request submitted', () => {
+    expect(
+      describeState({
+        tag: 'recoverableError',
+        error: { message: 'x', kind: 'recoverable' },
+        requestTxId: 'at1req',
+      }).step,
+    ).toBe(2)
+    expect(
+      describeState({
+        tag: 'terminalError',
+        error: { message: 'x', kind: 'terminal' },
+        requestTxId: 'at1req',
+      }).step,
+    ).toBe(2)
+  })
+
+  it('reports step 0 for an error state where nothing was submitted', () => {
+    expect(describeState({ tag: 'recoverableError', error: { message: 'x', kind: 'recoverable' } }).step).toBe(0)
+    expect(describeState({ tag: 'terminalError', error: { message: 'x', kind: 'terminal' } }).step).toBe(0)
+  })
+
+  it('tells a user whose transaction already went out that a terminal error is different from a clean failure', () => {
+    const nothingSubmitted = describeState({ tag: 'terminalError', error: { message: 'x', kind: 'terminal' } }).detail
+    const requestSubmitted = describeState({
+      tag: 'terminalError',
+      error: { message: 'x', kind: 'terminal' },
+      requestTxId: 'at1req',
+    }).detail
+    const claimSubmitted = describeState({
+      tag: 'terminalError',
+      error: { message: 'x', kind: 'terminal' },
+      requestTxId: 'at1req',
+      claimTxId: 'at1claim',
+    }).detail
+
+    expect(requestSubmitted).not.toBe(nothingSubmitted)
+    expect(claimSubmitted).not.toBe(nothingSubmitted)
+    expect(requestSubmitted.toLowerCase()).toContain('not lost')
+    expect(claimSubmitted.toLowerCase()).toContain('not lost')
+  })
+})
+
+describe('StatusPanel', () => {
+  it('shows the claim link for a recoverableError whose claim was already submitted', () => {
+    render(
+      createElement(StatusPanel, {
+        state: {
+          tag: 'recoverableError',
+          error: { message: 'x', kind: 'recoverable' },
+          requestTxId: 'at1req',
+          claimTxId: 'at1claim',
+        },
+        onRetry: () => {},
+        onReset: () => {},
+      }),
+    )
+    expect(screen.getByText('Output claim')).toBeInTheDocument()
+  })
+
+  it('shows the claim link for a terminalError whose claim was already submitted', () => {
+    render(
+      createElement(StatusPanel, {
+        state: {
+          tag: 'terminalError',
+          error: { message: 'x', kind: 'terminal' },
+          requestTxId: 'at1req',
+          claimTxId: 'at1claim',
+        },
+        onRetry: () => {},
+        onReset: () => {},
+      }),
+    )
+    expect(screen.getByText('Output claim')).toBeInTheDocument()
   })
 })

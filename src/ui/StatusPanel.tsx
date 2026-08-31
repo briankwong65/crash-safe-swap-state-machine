@@ -14,8 +14,7 @@ export function StatusPanel({
 }) {
   const copy = describeState(state)
   const requestTxId = 'requestTxId' in state ? state.requestTxId : undefined
-  const claimTxId =
-    state.tag === 'complete' ? state.claimTxId : state.tag === 'claimPending' ? state.claimTxId : undefined
+  const claimTxId = 'claimTxId' in state ? state.claimTxId : undefined
 
   return (
     <section className="status" aria-labelledby="status-heading">

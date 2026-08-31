@@ -119,23 +119,29 @@ export function describeState(state: SwapFlowState): StateCopy {
     case 'recoverableError':
       return {
         headline: 'Something went wrong — you can retry',
-        detail: state.requestTxId
-          ? `${state.error.message} Your swap request was already submitted, so retrying resumes the claim rather than placing a second trade.`
-          : state.error.message,
+        detail: state.claimTxId
+          ? `${state.error.message} Your claim transaction was already submitted, so retrying checks on it rather than placing a second trade.`
+          : state.requestTxId
+            ? `${state.error.message} Your swap request was already submitted, so retrying resumes the claim rather than placing a second trade.`
+            : state.error.message,
         needsApproval: false,
         waiting: false,
         canRetry: true,
-        step: state.requestTxId ? 2 : 0,
+        step: state.claimTxId ? 3 : state.requestTxId ? 2 : 0,
       }
 
     case 'terminalError':
       return {
         headline: 'Stopped',
-        detail: `${state.error.message} This is not retried automatically.`,
+        detail: state.claimTxId
+          ? `${state.error.message} Your claim transaction was already submitted before this happened — your funds are not lost. Check its status using the link below; this is not retried automatically.`
+          : state.requestTxId
+            ? `${state.error.message} Your swap request was already submitted before this happened — your funds are not lost. Check its status using the link below; this is not retried automatically.`
+            : `${state.error.message} This is not retried automatically.`,
         needsApproval: false,
         waiting: false,
         canRetry: false,
-        step: 0,
+        step: state.claimTxId ? 3 : state.requestTxId ? 2 : 0,
       }
   }
 }
