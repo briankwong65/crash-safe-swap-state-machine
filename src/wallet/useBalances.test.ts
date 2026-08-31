@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PROGRAMS } from '../config'
-import { sumMicrocredits, useBalances } from './useBalances'
+import { sumMicrocredits, sumRecordField, useBalances } from './useBalances'
 
 const OWNER = 'aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp57xk'
 
@@ -112,5 +112,71 @@ describe('useBalances', () => {
     })
     expect(result.current.loading).toBe(false)
     expect(result.current.balances).toBeNull()
+  })
+})
+
+describe('sumRecordField — recordView (Shield privacy-extension shape)', () => {
+  it('reads a value from recordView.fields when there is no plaintext', () => {
+    expect(
+      sumRecordField([{ recordView: { fields: { microcredits: '1000000u64.private' } } }], 'microcredits'),
+    ).toBe(1_000_000n)
+  })
+
+  it('reads an ETH amount as u128 exactly', () => {
+    expect(
+      sumRecordField(
+        [{ recordView: { fields: { amount: '250000000000000000u128.private' } } }],
+        'amount',
+      ),
+    ).toBe(250_000_000_000_000_000n)
+  })
+
+  it('sums across several recordView records', () => {
+    expect(
+      sumRecordField(
+        [
+          { recordView: { fields: { microcredits: '1000000u64.private' } } },
+          { recordView: { fields: { microcredits: '2500000u64.private' } } },
+        ],
+        'microcredits',
+      ),
+    ).toBe(3_500_000n)
+  })
+
+  it('handles a literal with no visibility suffix', () => {
+    expect(sumRecordField([{ recordView: { fields: { microcredits: '42u64' } } }], 'microcredits')).toBe(42n)
+  })
+
+  it('prefers recordView when both shapes are present', () => {
+    expect(
+      sumRecordField(
+        [
+          {
+            recordView: { fields: { microcredits: '7u64.private' } },
+            recordPlaintext: '{ owner: aleo1x.private, microcredits: 999u64.private, _nonce: 0group.public }',
+          },
+        ],
+        'microcredits',
+      ),
+    ).toBe(7n)
+  })
+
+  it('still reads legacy recordPlaintext when recordView is absent', () => {
+    expect(
+      sumRecordField(
+        [{ recordPlaintext: '{ owner: aleo1x.private, microcredits: 5000000u64.private, _nonce: 0group.public }' }],
+        'microcredits',
+      ),
+    ).toBe(5_000_000n)
+  })
+
+  it('skips a record carrying neither shape, and one missing the field', () => {
+    expect(sumRecordField([{}, { recordView: { fields: {} } }], 'microcredits')).toBe(0n)
+  })
+
+  it('skips a malformed literal rather than throwing', () => {
+    expect(
+      sumRecordField([{ recordView: { fields: { microcredits: 'not-a-number' } } }], 'microcredits'),
+    ).toBe(0n)
   })
 })

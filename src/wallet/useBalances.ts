@@ -68,13 +68,19 @@ export function useBalances(address: string | null) {
           }
         }
 
-        const hasNativeAleo = PROGRAMS.credits in byProgram
-        let aleo = byProgram[PROGRAMS.credits] ?? 0n
-        const eth = byProgram[PROGRAMS.eth] ?? 0n
+        // `getPrivateBalances` reads only `recordPlaintext`, so a Shield
+        // connection scoped by a `recordAccess` grant — which returns
+        // `recordView` instead — yields no key for either program. Fall back to
+        // reading the wallet's records directly for whichever it omitted.
+        const aleo =
+          PROGRAMS.credits in byProgram
+            ? (byProgram[PROGRAMS.credits] ?? 0n)
+            : await sumProgramRecords(client, PROGRAMS.credits, 'microcredits')
 
-        if (!hasNativeAleo) {
-          aleo = await sumCreditsRecords(client)
-        }
+        const eth =
+          PROGRAMS.eth in byProgram
+            ? (byProgram[PROGRAMS.eth] ?? 0n)
+            : await sumProgramRecords(client, PROGRAMS.eth, 'amount')
 
         if (!cancelled) setBalances({ aleo, eth })
       } catch {
@@ -106,8 +112,54 @@ export function useBalances(address: string | null) {
  * plaintext, or has no `microcredits` field at all) is skipped rather than
  * thrown — exported for direct unit testing of this parsing path.
  */
-export function sumMicrocredits(records: Array<{ recordPlaintext?: string }>): bigint {
+export type RecordLike = {
+  recordPlaintext?: string
+  recordView?: { fields?: Record<string, string> }
+}
+
+/**
+ * Reads an unsigned integer out of an Aleo field literal.
+ *
+ * A `recordView` field arrives as a literal such as `"1000000u64.private"`.
+ * Parsed off the leading digits as a string so the value stays exact — routing
+ * a u128 through `Number` would silently lose precision.
+ */
+function literalToBigInt(literal: string | undefined): bigint | null {
+  if (!literal) return null
+  const digits = /^\s*(\d+)/.exec(literal)
+  if (!digits?.[1]) return null
+  try {
+    return BigInt(digits[1])
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Sums one numeric field across the wallet's records, accepting BOTH record
+ * shapes a wallet may return.
+ *
+ * Shield emits the privacy-extension envelope — `recordView.fields`, a flat map
+ * of the fields the connect-time `recordAccess` grant permitted — and omits
+ * `recordPlaintext` entirely. The SDK's own `getPrivateBalances` reads only
+ * `recordPlaintext`, so against a grant-scoped Shield connection it parses
+ * nothing and reports no balance at all. That is not a hypothetical: it is what
+ * this application hit on a real wallet holding a real record.
+ *
+ * `recordView` is preferred when present, since it is already structured. The
+ * `recordPlaintext` path stays for wallets that emit the legacy shape, and uses
+ * the SDK's depth-aware `parseRecord` rather than a regex — a regex over raw
+ * plaintext has no notion of structure and would match a field name nested
+ * inside a composite value before the real top-level one.
+ *
+ * A record that carries neither shape, or lacks the field, is skipped rather
+ * than thrown.
+ */
+export function sumRecordField(records: RecordLike[], field: string): bigint {
   return records.reduce<bigint>((total, record) => {
+    const fromView = literalToBigInt(record.recordView?.fields?.[field])
+    if (fromView !== null) return total + fromView
+
     const plaintext = record.recordPlaintext
     if (!plaintext) return total
 
@@ -118,24 +170,30 @@ export function sumMicrocredits(records: Array<{ recordPlaintext?: string }>): b
       return total
     }
 
-    const amount = parsed.fields.microcredits?.value
+    const amount = parsed.fields[field]?.value
     if (typeof amount !== 'bigint') return total
 
     return total + amount
   }, 0n)
 }
 
-/** Fallback: sum `microcredits` across the wallet's unspent `credits.aleo` records. */
-async function sumCreditsRecords(client: VeilClient): Promise<bigint> {
+/** Back-compatible alias: the credits case of {@link sumRecordField}. */
+export function sumMicrocredits(records: RecordLike[]): bigint {
+  return sumRecordField(records, 'microcredits')
+}
+
+/** Sums one field across a program's unspent records, via the wallet directly. */
+async function sumProgramRecords(
+  client: VeilClient,
+  program: string,
+  field: string,
+): Promise<bigint> {
   try {
-    const records = await client.requestRecords({
-      program: PROGRAMS.credits,
-      statusFilter: 'unspent',
-    })
-    // `OwnedRecordEncrypted` (no plaintext, e.g. when the wallet withholds it)
-    // has no `recordPlaintext` property at all, so the union needs a cast to
-    // the narrower shape `sumMicrocredits` actually reads.
-    return sumMicrocredits(records as Array<{ recordPlaintext?: string }>)
+    const records = await client.requestRecords({ program, statusFilter: 'unspent' })
+    // The return type is a union whose encrypted variant declares neither
+    // `recordPlaintext` nor `recordView`, so it needs a cast to the shape
+    // `sumRecordField` actually reads.
+    return sumRecordField(records as RecordLike[], field)
   } catch {
     return 0n
   }
