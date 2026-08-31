@@ -14,13 +14,13 @@
 
 ## Work delegated to AI
 
-The agent wrote the reducer (`swapMachine.ts`), the effect-running hook
+I delegated implementation to the agent: the reducer (`swapMachine.ts`), the effect-running hook
 (`useSwapFlow.ts`), the wallet-session hook, the pinned API client, the
 pending-claim persistence module, all UI components, and the test suite
-(232 tests across 14 files). The task plan itself — component boundaries,
-the state machine's members, the persistence approach — was drafted by the
-agent from the spec brief and revised across the implementation as
-real API shapes turned up.
+(232 tests across 14 files). The plan itself — component boundaries, the
+state machine's members, the persistence approach — was drafted by the agent
+from the spec brief to my direction, and revised throughout as real
+API shapes turned up.
 
 ## One AI output that was changed
 
@@ -96,12 +96,53 @@ agreed with the code and proved nothing about the integration. Contract
 tests against those boundaries are named as the next improvement in
 `DECISIONS.md`.
 
----
+## Judgement calls I made
 
-**Note to the submitter:** this file was drafted during agent-assisted
-development and states the facts of what happened, but it is written about
-the work rather than by you. Rewrite it in your own voice before submitting
-— particularly the judgement calls: which AI output you rejected and why,
-what you checked and how, and what you would do differently. You are
-accountable for every line, and this is the document a reviewer will use to
-test whether you can explain the code you are submitting.
+**How the work was executed.** I had the agent plan the whole build up
+front, then execute it task by task with a separate review of every task's
+diff before moving on, rather than letting it write the app in one pass.
+That review loop caught roughly twenty defects during implementation —
+several of them, including an unguarded state transition that allowed a
+second claim and a resume path that could never complete, sat in the
+agent's own plan rather than its code. Planning in that much detail turned
+out to be a mixed decision: it produced a coherent architecture, but the
+plan's reference code was written against an SDK nobody had run, so its
+wrong assumptions propagated into every task that copied them.
+
+**Architecture.** I chose a hand-written reducer for the swap lifecycle
+over TanStack Query or XState. The two-transaction shape is not
+request/response, so Query would have scattered the interesting states
+across components as booleans; XState was a large dependency and a DSL to
+read past for a machine that is about 150 lines. The reducer also let every
+guard live in one pure function that tests can drive with no mocks.
+
+**What I did not accept.** I rejected shipping the `@provablehq/sdk` peer
+just to activate `deriveSwapId`. It would add an unexercised WASM
+dependency outside the project's pinned dependency set, to cross-check a
+value already read authoritatively from chain and confirmed on both live
+swaps. I also rejected a `localStorage` lease to extend duplicate-claim
+protection across browser tabs: a stale lease would block crash recovery,
+which is worse than the race it prevents, on the one path whose purpose is
+not stranding funds. Both are recorded as known limitations instead.
+
+**Where I overruled the agent's own conclusions.** Its first draft of
+`DECISIONS.md` named installing that peer as the single next improvement. I
+pushed back — it sat oddly next to a section documenting seven defects that
+a passing test suite had missed, and it proposed a package install as the
+answer to a testing problem. The document now names contract tests at the
+integration boundaries instead, which is what would actually have caught
+them.
+
+**Running it for real.** Every one of the seven integration defects listed
+above surfaced because I ran the application against a live wallet and node
+and worked through each failure. Two came from my own diagnosis rather than
+the code: I confirmed that `faucet.aleo.org` issues public credits while
+every swap spends a private record — a gap the spec does not mention
+— and I identified that a swap reported as failed had in fact succeeded,
+which traced back to the claim retrying only one error type and treating a
+transient chain read as fatal.
+
+**What I would do differently.** Write the plan as interfaces and test
+cases rather than implementation code, and let each task discover the real
+API surface itself. Most of what went wrong came from committing to an
+implementation before anything had run against the actual SDK.
