@@ -1,24 +1,25 @@
+import { parseRecord } from '@provablehq/veil-core'
 import { useCallback, useEffect, useState } from 'react'
 import { PROGRAMS } from '../config'
 import { type VeilClient, useVeilClient } from './useVeilClient'
 
 type Balances = { aleo: bigint; eth: bigint }
 
-/** Matches `microcredits: 1234u64.private` (or `.public`) in a record's plaintext. */
-const MICROCREDITS_PATTERN = /microcredits:\s*(\d+)u64/
-
 /**
  * Private, spendable balances — the tokens live as records, so a public balance
  * read shows zero on a funded account.
  *
- * `getPrivateBalances` sums unspent records per program, but its keys are
- * documented as `program` for wrapper-token records and `program/token_id`
- * for registry records — `credits.aleo` native records (which carry
- * `microcredits`, not an ARC-20 `amount`/`token_id`) fit neither shape
- * cleanly, so the helper may not report anything under the bare
- * `credits.aleo` key. When it does not, `credits.aleo`'s own unspent records
- * are fetched directly and their `microcredits` fields summed. Which path is
- * live is confirmed against a real wallet during integration.
+ * `getPrivateBalances` DOES cover native `credits.aleo` records: reading the
+ * SDK's compiled source (`parseTokenRecordInfo` / `getPrivateBalances` in
+ * `@provablehq/shield-swap-sdk`'s `chunk-BRTZZVRZ.js`) shows it reads either
+ * an ARC-20 `amount` field or a native `microcredits` field off each parsed
+ * record, and keys a record with no `token_id` (which is what every
+ * `credits.aleo` record is) under the bare program name — exactly the key
+ * this hook reads. The fallback below is defensive insurance only, in case a
+ * future SDK version stops handling native records this way; it is triggered
+ * by the `credits.aleo` key being ABSENT from the result, not by the balance
+ * being zero, so a wallet that genuinely holds no ALEO never pays for a full
+ * record re-scan on every refresh.
  */
 export function useBalances(address: string | null) {
   const { client } = useVeilClient()
@@ -31,6 +32,7 @@ export function useBalances(address: string | null) {
   useEffect(() => {
     if (!client || !address) {
       setBalances(null)
+      setLoading(false)
       return
     }
 
@@ -43,10 +45,11 @@ export function useBalances(address: string | null) {
           programs: [PROGRAMS.credits, PROGRAMS.eth],
         })
 
+        const hasNativeAleo = PROGRAMS.credits in byProgram
         let aleo = byProgram[PROGRAMS.credits] ?? 0n
         const eth = byProgram[PROGRAMS.eth] ?? 0n
 
-        if (aleo === 0n) {
+        if (!hasNativeAleo) {
           aleo = await sumCreditsRecords(client)
         }
 
@@ -67,34 +70,49 @@ export function useBalances(address: string | null) {
 }
 
 /**
- * Fallback: sum `microcredits` across the wallet's unspent `credits.aleo`
- * records.
+ * Sums the `microcredits` field of parsed record plaintexts.
  *
- * The brief called this via `client.transport.requestRecords(...)`, but the
- * SDK's `Transport` type is only `{ config, request }` — it carries no
- * `requestRecords` method. The real method lives directly on the wallet
- * client (`WalletActions.requestRecords`, part of the composed client
- * returned by `useVeilClient`), so this calls `client.requestRecords(...)`
- * instead. Its records are `OwnedRecord[]`, whose plaintext is the raw Aleo
- * string on `recordPlaintext` — there is no parsed `.data.microcredits`
- * field — so `microcredits` is pulled out with a regex instead of a
- * property read.
+ * Uses the SDK's own depth-aware `parseRecord` (from `@provablehq/veil-core`,
+ * the same parser `getPrivateBalances` uses internally) instead of a flat
+ * regex — a regex over raw plaintext has no notion of structure and would
+ * match a `microcredits` key nested inside a composite field before the real
+ * top-level one. `parseRecord(...).fields` holds only top-level record
+ * entries, so `fields.microcredits` is unambiguous.
+ *
+ * A record whose plaintext is missing or fails to parse (not valid record
+ * plaintext, or has no `microcredits` field at all) is skipped rather than
+ * thrown — exported for direct unit testing of this parsing path.
  */
+export function sumMicrocredits(records: Array<{ recordPlaintext?: string }>): bigint {
+  return records.reduce<bigint>((total, record) => {
+    const plaintext = record.recordPlaintext
+    if (!plaintext) return total
+
+    let parsed
+    try {
+      parsed = parseRecord(plaintext)
+    } catch {
+      return total
+    }
+
+    const amount = parsed.fields.microcredits?.value
+    if (typeof amount !== 'bigint') return total
+
+    return total + amount
+  }, 0n)
+}
+
+/** Fallback: sum `microcredits` across the wallet's unspent `credits.aleo` records. */
 async function sumCreditsRecords(client: VeilClient): Promise<bigint> {
   try {
     const records = await client.requestRecords({
       program: PROGRAMS.credits,
       statusFilter: 'unspent',
     })
-
-    return records.reduce<bigint>((total, record) => {
-      const plaintext = (record as { recordPlaintext?: string }).recordPlaintext
-      if (!plaintext) return total
-      const match = MICROCREDITS_PATTERN.exec(plaintext)
-      const amount = match?.[1]
-      if (amount === undefined) return total
-      return total + BigInt(amount)
-    }, 0n)
+    // `OwnedRecordEncrypted` (no plaintext, e.g. when the wallet withholds it)
+    // has no `recordPlaintext` property at all, so the union needs a cast to
+    // the narrower shape `sumMicrocredits` actually reads.
+    return sumMicrocredits(records as Array<{ recordPlaintext?: string }>)
   } catch {
     return 0n
   }
