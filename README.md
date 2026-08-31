@@ -94,17 +94,15 @@ stops covering native credits by default).
 
 ## Successful testnet swaps
 
-The four links below are placeholders. They must be filled in with real
-testnet transactions after a live run in Chrome with the Shield Wallet
-extension — this was not done from the development environment (see
-`ASSISTANCE.md`).
+Both directions were completed on testnet in Chrome with the Shield Wallet
+extension. All four transactions are confirmed `accepted` on chain.
 
-| Direction | Transaction | Explorer link |
-| --- | --- | --- |
-| ALEO → ETH | Swap request | **PENDING LIVE RUN — replace before submitting** |
-| ALEO → ETH | Output claim | **PENDING LIVE RUN — replace before submitting** |
-| ETH → ALEO | Swap request | **PENDING LIVE RUN — replace before submitting** |
-| ETH → ALEO | Output claim | **PENDING LIVE RUN — replace before submitting** |
+| Direction  | Transaction  | Explorer link                                                                                                   |
+| ---------- | ------------ | --------------------------------------------------------------------------------------------------------------- |
+| ALEO → ETH | Swap request | https://testnet.explorer.provable.com/transaction/at1pvfl4c6ec848kxftce2zg7vsuhtxlku0jf9xk9jndshr3vk8hgzqyfk8ef |
+| ALEO → ETH | Output claim | https://testnet.explorer.provable.com/transaction/at1a99rkm5uuntnm5rhtsz2ghyuwsypkef54587xhqk9mkjdxc6j5xsx8hsdu |
+| ETH → ALEO | Swap request | https://testnet.explorer.provable.com/transaction/at1dqprmxqv9h442hg45ws3kugnq7dx9mc6q02fvmwyhycnlpvn45rqc8qnv3 |
+| ETH → ALEO | Output claim | https://testnet.explorer.provable.com/transaction/at1v67gu54syx0u6dzxxd0ltt00pvlguwt5c4nxssyfzxa0xeyulugqkccj4g |
 
 ## Live-integration checklist
 
@@ -117,7 +115,7 @@ watched during the first live run:
   `https://api.provable.com/v2` using a known-good example
   transactions: `GET .../testnet/transaction/{txId}` (used by
   `recoverSwapIdentity`) returns `{ type, id, execution, fee }`, and `GET
-  .../testnet/transaction/confirmed/{txId}` (used by `waitForTransaction`,
+.../testnet/transaction/confirmed/{txId}` (used by `waitForTransaction`,
   Fix 4) returns `{ type, index, status, finalize, transaction }` where
   `transaction` has the same shape as the plain endpoint. **Still needs
   confirming**: both example transactions were `status: "accepted"` — no

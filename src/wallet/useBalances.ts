@@ -45,29 +45,6 @@ export function useBalances(address: string | null) {
           programs: [PROGRAMS.credits, PROGRAMS.eth],
         })
 
-        // Temporary live-integration diagnostic, opt-in from the console with
-        // `window.__debugBalances = true` then Refresh. Logs SHAPE only — never
-        // a record's plaintext, which carries the user's amounts.
-        if (import.meta.env.DEV && (globalThis as { __debugBalances?: boolean }).__debugBalances) {
-          try {
-            const raw = await client.requestRecords({
-              program: PROGRAMS.credits,
-              statusFilter: 'unspent',
-            })
-            console.info('[balances] getPrivateBalances keys:', Object.keys(byProgram))
-            console.info('[balances] getPrivateBalances values:', byProgram)
-            console.info('[balances] credits records returned:', Array.isArray(raw) ? raw.length : typeof raw)
-            const first = Array.isArray(raw) ? raw[0] : undefined
-            console.info('[balances] first record keys:', first ? Object.keys(first) : 'none')
-            console.info(
-              '[balances] first record has plaintext:',
-              Boolean(first && 'recordPlaintext' in first && first.recordPlaintext),
-            )
-          } catch (diagError) {
-            console.warn('[balances] requestRecords threw:', diagError)
-          }
-        }
-
         // `getPrivateBalances` reads only `recordPlaintext`, so a Shield
         // connection scoped by a `recordAccess` grant — which returns
         // `recordView` instead — yields no key for either program. Fall back to

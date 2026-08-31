@@ -153,17 +153,12 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
 
   const fail = useCallback((error: unknown) => {
     if (import.meta.env.DEV) {
-      // A fallback transport reports only its first transport's message, so the
-      // reason the HTTP read actually failed is buried in cause/errors. Surface
-      // the whole chain — the summary alone is not diagnosable.
-      console.error('[flow] failure:', error)
-      const chain = error as { cause?: unknown; errors?: unknown[]; stack?: string }
-      if (chain?.cause) console.error('[flow] cause:', chain.cause)
-      if (Array.isArray(chain?.errors)) {
-        chain.errors.forEach((e, i) => console.error(`[flow] transport ${i} error:`, e))
-      }
-      if (chain?.stack) console.error('[flow] stack:', chain.stack)
+      // A fallback transport reports only its first transport's message, so
+      // the reason a chain read actually failed lives in cause/errors.
+      const chain = error as { cause?: unknown; errors?: unknown[] }
+      console.error('[flow] failure:', error, chain?.cause ?? '', chain?.errors ?? '')
     }
+
     dispatch({ type: 'FAILED', error: classifyQuoteError(error) })
     inFlight.current = false
   }, [])
