@@ -1,8 +1,9 @@
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react'
 import { shieldSwapActions } from '@provablehq/shield-swap-sdk'
 import { fromWalletAdapter } from '@provablehq/veil-aleo-wallet-adapter'
-import { createWalletClient } from '@provablehq/veil-core'
+import { createWalletClient, fallback, http } from '@provablehq/veil-core'
 import { useMemo } from 'react'
+import { ALEO_NODE_URL } from '../config'
 import { PinnedApiClient } from '../api/pinnedApiClient'
 import { useApiKey } from '../api/apiKeyContext'
 
@@ -26,7 +27,16 @@ export function useVeilClient() {
       fetch: globalThis.fetch.bind(globalThis),
     })
 
-    const { account, transport } = fromWalletAdapter(wallet.adapter)
+    const { account, transport: walletTransport } = fromWalletAdapter(wallet.adapter)
+
+    // The wallet transport handles writes, signing and record access, but not
+    // chain READS — it rejects methods like `getMappingValue` outright, which
+    // `planSwap` needs to check each hop's live pool state and trade controls.
+    // Falling back to the node over HTTP keeps every write on the wallet while
+    // letting reads through, which is the arrangement the transport's own error
+    // message prescribes.
+    const transport = fallback([walletTransport, http(ALEO_NODE_URL)])
+
     const client = createWalletClient({ account, transport }).extend(
       shieldSwapActions({ api }),
     )
