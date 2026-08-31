@@ -2,14 +2,14 @@
 
 ## Component and state boundaries
 
-Two layers, deliberately separate. `useWalletSession` collapses adapter
-readiness and API-key presence into `unavailable | disconnected |
-connecting | needsApiKey | ready`; `App` gates on this alone.
+Two layers. `useWalletSession` collapses adapter readiness and API-key
+presence into `unavailable | disconnected | connecting | needsApiKey |
+ready`; `App` gates on this alone.
 
 `swapMachine.ts` is a pure `(state, event) => state` reducer over the trade
-lifecycle. It imports nothing from React or the SDK, so its tests need no
-mocks. `useSwapFlow` runs the side effects between the two; `SwapPanel`
-renders what the reducer returns.
+lifecycle, importing nothing from React or the SDK, so its tests need no
+mocks. `useSwapFlow` runs the side effects; `SwapPanel` renders what the
+reducer returns.
 
 Guards live in the reducer, not components: an illegal event (a second
 `SUBMIT` while busy) returns the state unchanged, so a component that
@@ -30,8 +30,8 @@ UI bug cannot submit against a stale quote.
 `localStorage`, key `shieldswap.pendingClaim.v1`, written before awaiting
 confirmation: the serialized handle (bigints as decimal strings, enumerated
 by name — never spread, so no unexpected field rides along), wallet
-address, request tx id, direction, raw amount, timestamp. Never the
-blinding factor or API key.
+address, request tx id, direction, amount, timestamp. Never the blinding
+factor or API key.
 
 Chosen over `sessionStorage` because recovery must survive a closed tab;
 over IndexedDB because the payload is one small JSON object. The `v1`
@@ -55,18 +55,18 @@ explicit rebinding, hiding the one method that differs.
 ## UX decisions
 
 One primary button labelled with the current state, so it never says
-something different from what it does. A four-step stepper (Request,
-Finalize, Claim, Done) and an `aria-live="polite"` region narrate long
-waits without stealing focus. Plain-language copy explains why a private
-swap is two transactions, and says not to resubmit while waiting.
+something different from what it does. A four-step stepper and an
+`aria-live="polite"` region narrate long waits without stealing focus.
+Plain-language copy explains why a private swap is two transactions, and
+says not to resubmit while waiting.
 
 ## Known limitations
 
 - Duplicate-claim protection is per tab; two tabs are separate JS heaps.
-- `swapId` recovery reads the confirmed transaction; `deriveSwapId`'s
-  cross-check is INACTIVE, since the optional `@provablehq/sdk` peer it
-  needs isn't installed. Installing it activates a second source of truth
-  that throws on mismatch rather than guessing.
+- `swapId` recovery reads the confirmed transaction, which is authoritative
+  and verified live. `deriveSwapId`'s cross-check is INACTIVE — its optional
+  `@provablehq/sdk` peer isn't installed — so it is a second source of
+  truth left unenabled, not a missing fix.
 - One private record must cover the whole input; the UI explains this
   rather than combining records.
 - Only the pinned pool is used; a wrong or multi-hop route is terminal,
@@ -88,10 +88,12 @@ relative base URL the SDK's `new URL()` rejected; Shield returning
 refusing chain reads; an HTTP transport defaulting to mainnet; the node
 needing a CORS proxy; `swap()` returning a wallet handle, not a
 transaction id; and imports needing AMM programs, not record programs.
-The mocks encoded my assumptions, so they agreed with the code and proved
-nothing about the integration.
 
 ## Next improvement
 
-Install `@provablehq/sdk` so `deriveSwapId` runs unconditionally and
-cross-checks the transaction-shape heuristic instead of standing dormant.
+Contract tests at the integration boundaries. Every defect above passed the
+mocked suite because the mocks encoded my assumptions rather than the SDK's
+and the wallet's real behaviour. A fake adapter returning Shield's actual
+shapes — `recordView`, a `shield_…` request handle — plus assertions that
+constructed URLs are absolute and network-qualified would have caught all
+of them before a live run.
