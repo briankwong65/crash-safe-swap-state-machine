@@ -9,7 +9,7 @@ import { useTokens } from './wallet/useTokens'
 import { useVeilClient } from './wallet/useVeilClient'
 import { useWalletSession } from './wallet/useWalletSession'
 
-function Shell() {
+export function Shell() {
   const session = useWalletSession()
   const { setApiKey } = useApiKey()
   const { client, api } = useVeilClient()
@@ -23,6 +23,15 @@ function Shell() {
     tokens,
     onClaimed: refresh,
   })
+
+  // `useSwapFlow` derives this from `session.address` alone — it does not
+  // wait on an API key or the token registry — so a claim left by another
+  // wallet on this browser is known well before `SwapPanel` ever mounts.
+  // `SwapPanel` renders its own copy of this notice once it is visible (see
+  // below); this one covers every screen the user sees before that,
+  // guarded so the two are never shown at once.
+  const swapPanelVisible = session.status === 'ready' && !!tokens
+  const showLiftedNotice = !!flow.blockedByOtherWallet && !swapPanelVisible
 
   return (
     <main className="app">
@@ -43,6 +52,13 @@ function Shell() {
           </button>
         )}
       </header>
+
+      {showLiftedNotice && (
+        <p className="notice notice--danger">
+          A pending claim on this browser belongs to a different wallet. Connect that wallet to
+          finish it — this one cannot.
+        </p>
+      )}
 
       {session.status === 'unavailable' && (
         <p className="notice notice--danger">
@@ -68,7 +84,11 @@ function Shell() {
         <p className="notice notice--danger">Could not load the token registry: {tokenError}</p>
       )}
 
-      {session.status === 'ready' && tokens && (
+      {session.status === 'ready' && !tokens && !tokenError && (
+        <p className="notice">Loading the token registry…</p>
+      )}
+
+      {swapPanelVisible && tokens && (
         <SwapPanel
           tokens={tokens}
           balances={balances}

@@ -54,14 +54,20 @@ export function SwapPanel({
   )
 
   const overBalance = parsed.ok && balanceIn !== null && parsed.raw > balanceIn
+  // A parsed zero is a legitimate ParseResult (parseAmountInput must stay
+  // agnostic to trade rules), but a zero-amount trade is never valid here —
+  // this is where that rule belongs, not in the parser.
+  const isZero = parsed.ok && parsed.raw === 0n
   const amountError = !parsed.ok
     ? (PARSE_MESSAGES[parsed.reason] ?? null) || null
-    : overBalance
-      ? `That is more than your private ${tokenIn.symbol} balance. One private record must cover the whole amount — records are not combined.`
-      : null
+    : isZero
+      ? 'Enter an amount greater than zero.'
+      : overBalance
+        ? `That is more than your private ${tokenIn.symbol} balance. One private record must cover the whole amount — records are not combined.`
+        : null
 
   const inputs: QuoteInputs | null =
-    parsed.ok && !overBalance
+    parsed.ok && !overBalance && !isZero
       ? { direction, amountRaw: parsed.raw, slippageBps }
       : null
 

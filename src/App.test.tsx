@@ -1,8 +1,28 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Shell } from './App'
 import { SwapPanel } from './SwapPanel'
 import type { Quote, SwapFlowState } from './swap/types'
+import { useBalances } from './wallet/useBalances'
+import { useTokens } from './wallet/useTokens'
+import { useVeilClient } from './wallet/useVeilClient'
+import { useWalletSession } from './wallet/useWalletSession'
+import { useSwapFlow } from './swap/useSwapFlow'
+
+// `Shell` (the un-exported-by-default body of `App`) is tested directly
+// against mocked hooks so these tests never need a real wallet adapter or
+// network — only `SwapPanel`'s composition and the notice/loading branching
+// around it are under test here.
+vi.mock('./wallet/useWalletSession', () => ({ useWalletSession: vi.fn() }))
+vi.mock('./wallet/useTokens', () => ({ useTokens: vi.fn() }))
+vi.mock('./wallet/useBalances', () => ({ useBalances: vi.fn() }))
+vi.mock('./wallet/useVeilClient', () => ({ useVeilClient: vi.fn() }))
+vi.mock('./swap/useSwapFlow', () => ({ useSwapFlow: vi.fn() }))
+vi.mock('./api/apiKeyContext', () => ({
+  useApiKey: vi.fn(() => ({ apiKey: null, setApiKey: vi.fn() })),
+  ApiKeyProvider: ({ children }: { children: unknown }) => children,
+}))
 
 const tokens = {
   aleo: { id: 'aleo-field', symbol: 'ALEO', decimals: 6 },
@@ -140,5 +160,95 @@ describe('swap interface', () => {
 
     expect(screen.getByRole('link', { name: /at1req/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /at1claim/ })).toBeInTheDocument()
+  })
+
+  it('rejects a zero amount with a validation message and disables the primary control', async () => {
+    const flow = makeFlow({ tag: 'idle' })
+    renderPanel(flow)
+
+    await userEvent.type(screen.getByLabelText('Amount to sell'), '0')
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/enter an amount greater than zero/i)
+    expect(screen.getByRole('button', { name: 'Get quote' })).toBeDisabled()
+  })
+
+  it('does not produce a submittable state when MAX is clicked with a zero balance', async () => {
+    const flow = makeFlow({ tag: 'idle' })
+    const zeroBalances = { aleo: 0n, eth: 250_000_000_000_000_000n }
+    render(
+      <SwapPanel
+        tokens={tokens}
+        balances={zeroBalances}
+        balancesLoading={false}
+        onRefreshBalances={vi.fn()}
+        flow={flow as never}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'Max' }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/enter an amount greater than zero/i)
+    expect(screen.getByRole('button', { name: 'Get quote' })).toBeDisabled()
+    expect(flow.requestQuote).not.toHaveBeenCalled()
+  })
+})
+
+describe('app shell', () => {
+  beforeEach(() => {
+    vi.mocked(useVeilClient).mockReturnValue({ client: null, api: null } as never)
+    vi.mocked(useBalances).mockReturnValue({ balances: null, loading: false, refresh: vi.fn() })
+  })
+
+  it('shows the blocked-by-other-wallet notice before the API key is supplied', () => {
+    vi.mocked(useWalletSession).mockReturnValue({
+      status: 'needsApiKey',
+      address: 'aleo1self',
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    } as never)
+    vi.mocked(useTokens).mockReturnValue({ tokens: null, error: null })
+    vi.mocked(useSwapFlow).mockReturnValue(
+      makeFlow({ tag: 'idle' }, { blockedByOtherWallet: 'aleo1someoneelse' }) as never,
+    )
+
+    render(<Shell />)
+
+    // The API-key gate is still up — SwapPanel (and its own copy of this
+    // notice) is nowhere near mounting — yet the warning must already be
+    // visible here, which is exactly what this fix restores.
+    expect(screen.getByLabelText('Shield Swap testnet API key')).toBeInTheDocument()
+    expect(screen.getByText(/belongs to a different wallet/i)).toBeInTheDocument()
+  })
+
+  it('shows the notice only once when the swap panel is also visible', () => {
+    vi.mocked(useWalletSession).mockReturnValue({
+      status: 'ready',
+      address: 'aleo1self',
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    } as never)
+    vi.mocked(useTokens).mockReturnValue({ tokens, error: null })
+    vi.mocked(useSwapFlow).mockReturnValue(
+      makeFlow({ tag: 'idle' }, { blockedByOtherWallet: 'aleo1someoneelse' }) as never,
+    )
+
+    render(<Shell />)
+
+    expect(screen.getAllByText(/belongs to a different wallet/i)).toHaveLength(1)
+  })
+
+  it('shows a loading indication while the token registry resolves', () => {
+    vi.mocked(useWalletSession).mockReturnValue({
+      status: 'ready',
+      address: 'aleo1self',
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    } as never)
+    vi.mocked(useTokens).mockReturnValue({ tokens: null, error: null })
+    vi.mocked(useSwapFlow).mockReturnValue(makeFlow({ tag: 'idle' }) as never)
+
+    render(<Shell />)
+
+    expect(screen.getByText(/loading the token registry/i)).toBeInTheDocument()
   })
 })
