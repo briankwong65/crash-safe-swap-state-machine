@@ -68,6 +68,16 @@ export class PinnedApiClient extends ApiClient {
       throw new Error(`Route request failed (${response.status}): ${body}`)
     }
 
-    return (await response.json()) as Awaited<ReturnType<ApiClient['getRoute']>>
+    const body = (await response.json()) as Awaited<ReturnType<ApiClient['getRoute']>>
+
+    // Temporary live-integration diagnostic, opt-in from the console with
+    // `window.__debugRoute = true`. Logs the route body only — it carries no
+    // credential, and the Authorization header is never included.
+    if (import.meta.env.DEV && (globalThis as { __debugRoute?: boolean }).__debugRoute) {
+      console.info('[route] request:', `${this.baseUrl}/route?${params.toString()}`)
+      console.info('[route] response body:', JSON.stringify(body, null, 2))
+    }
+
+    return body
   }
 }
