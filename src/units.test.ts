@@ -48,3 +48,31 @@ describe('formatRawAmount', () => {
     expect(formatWithSymbol(100_000n, 6, 'ETH')).toBe('0.1 ETH')
   })
 })
+
+describe('formatRawAmount — small amounts on high-decimal tokens', () => {
+  it('never renders a non-zero amount as zero', () => {
+    // A real quote from the live pool: 0.09 ALEO -> this much ETH.
+    expect(formatRawAmount(811_633_973_158n, 18)).toBe('0.0000008116')
+  })
+
+  it('keeps four significant digits past the leading zeros', () => {
+    expect(formatRawAmount(1_234_567_890n, 18)).toBe('0.000000001234')
+  })
+
+  it('still truncates rather than rounding at the extended precision', () => {
+    expect(formatRawAmount(999_999_999_999n, 18)).toBe('0.0000009999')
+  })
+
+  it('renders the smallest representable unit rather than zero', () => {
+    expect(formatRawAmount(1n, 18)).toBe('0.000000000000000001')
+  })
+
+  it('leaves ordinary amounts on the six-digit default', () => {
+    expect(formatRawAmount(1_500_000n, 6)).toBe('1.5')
+    expect(formatRawAmount(1_999_999_999_999_999_999n, 18, 6)).toBe('1.999999')
+  })
+
+  it('still renders a true zero as zero', () => {
+    expect(formatRawAmount(0n, 18)).toBe('0')
+  })
+})
