@@ -1,4 +1,5 @@
 import { ApiKeyProvider, useApiKey } from './api/apiKeyContext'
+import { DevTools } from './dev/DevTools'
 import { SwapPanel } from './SwapPanel'
 import { useSwapFlow } from './swap/useSwapFlow'
 import { ApiKeyField } from './ui/ApiKeyField'
@@ -105,6 +106,8 @@ export default function App() {
   return (
     <WalletProviders>
       <ApiKeyProvider>
+        {/* DEV-ONLY console helpers for live testing; stripped from production. */}
+        {import.meta.env.DEV && <DevTools />}
         <Shell />
       </ApiKeyProvider>
     </WalletProviders>
