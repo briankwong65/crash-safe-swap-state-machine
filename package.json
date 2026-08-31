@@ -1,0 +1,44 @@
+{
+  "name": "shield-swap-trade-interface",
+  "version": "0.1.0",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test:watch": "vitest"
+  },
+  "keywords": [],
+  "license": "ISC",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@provablehq/aleo-types": "^1.0.1",
+    "@provablehq/aleo-wallet-adaptor-core": "^1.0.1",
+    "@provablehq/aleo-wallet-adaptor-react": "^1.0.1",
+    "@provablehq/aleo-wallet-adaptor-shield": "^1.0.1",
+    "@provablehq/aleo-wallet-standard": "^1.1.0",
+    "@provablehq/shield-swap-sdk": "^0.7.0",
+    "@provablehq/veil-aleo-wallet-adapter": "^0.7.0",
+    "@provablehq/veil-core": "^0.7.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.0.1",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.5"
+  }
+}
