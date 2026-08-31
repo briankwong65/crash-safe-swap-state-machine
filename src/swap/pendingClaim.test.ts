@@ -115,4 +115,63 @@ describe('pending claim storage', () => {
     expect(raw).not.toContain('ss_')
     expect(raw).not.toContain('blindingFactor')
   })
+
+  it('returns null instead of throwing when getItem itself throws', () => {
+    const throwingStorage: Storage = {
+      getItem: () => {
+        throw new Error('SecurityError')
+      },
+      setItem: () => {},
+      removeItem: () => {},
+      clear: () => {},
+      key: () => null,
+      length: 0,
+    }
+
+    expect(loadPendingClaim(OWNER, throwingStorage)).toBeNull()
+    expect(peekPendingClaimAddress(throwingStorage)).toBeNull()
+  })
+
+  it('ignores a same-version record missing the handle', () => {
+    localStorage.setItem(
+      PENDING_CLAIM_KEY,
+      JSON.stringify({
+        version: 1,
+        address: OWNER,
+        requestTxId: 'at1req',
+        direction: 'aleoToEth',
+        amountInRaw: '100000',
+        createdAt: 1_700_000_000_000,
+      }),
+    )
+    expect(loadPendingClaim(OWNER)).toBeNull()
+  })
+
+  it('ignores a record missing the address', () => {
+    localStorage.setItem(
+      PENDING_CLAIM_KEY,
+      JSON.stringify({
+        version: 1,
+        requestTxId: 'at1req',
+        direction: 'aleoToEth',
+        amountInRaw: '100000',
+        handle: claim.handle,
+        createdAt: 1_700_000_000_000,
+      }),
+    )
+    expect(loadPendingClaim(OWNER)).toBeNull()
+    expect(peekPendingClaimAddress()).toBeNull()
+  })
+
+  it('ignores a record whose handle is present but missing required fields', () => {
+    const brokenHandle = { ...claim.handle } as Record<string, unknown>
+    delete brokenHandle.tokenInId
+    localStorage.setItem(PENDING_CLAIM_KEY, JSON.stringify({ ...claim, handle: brokenHandle }))
+    expect(loadPendingClaim(OWNER)).toBeNull()
+  })
+
+  it('refuses to resume with an empty-string address even when a record exists', () => {
+    savePendingClaim(claim)
+    expect(loadPendingClaim('')).toBeNull()
+  })
 })

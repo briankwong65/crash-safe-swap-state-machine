@@ -65,15 +65,57 @@ export function deserializeHandle(serialized: SerializedHandle): SwapHandle {
   return handle
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+/**
+ * A same-version record can still be malformed — truncated by a quota-limited
+ * write, hand-edited, or left over from a shape this module no longer
+ * produces. Every field the rest of the module relies on (`deserializeHandle`
+ * on `handle`, the address comparison in `loadPendingClaim`) is checked here
+ * so a partial record is rejected up front instead of surfacing as a crash
+ * deeper in a caller that trusted it.
+ */
+function isValidSerializedHandle(value: unknown): value is SerializedHandle {
+  if (typeof value !== 'object' || value === null) return false
+  const handle = value as Record<string, unknown>
+  return (
+    isNonEmptyString(handle.tokenInId) &&
+    isNonEmptyString(handle.tokenOutId) &&
+    isNonEmptyString(handle.poolKey) &&
+    isNonEmptyString(handle.amountIn) &&
+    isNonEmptyString(handle.transactionId) &&
+    isNonEmptyString(handle.program)
+  )
+}
+
+function isValidPendingClaim(value: unknown): value is PendingClaim {
+  if (typeof value !== 'object' || value === null) return false
+  const claim = value as Record<string, unknown>
+  return (
+    claim.version === CURRENT_VERSION &&
+    isNonEmptyString(claim.address) &&
+    isNonEmptyString(claim.requestTxId) &&
+    (claim.direction === 'aleoToEth' || claim.direction === 'ethToAleo') &&
+    isNonEmptyString(claim.amountInRaw) &&
+    isValidSerializedHandle(claim.handle) &&
+    typeof claim.createdAt === 'number'
+  )
+}
+
 function read(storage: Storage | null): PendingClaim | null {
   if (!storage) return null
-  const raw = storage.getItem(PENDING_CLAIM_KEY)
-  if (!raw) return null
 
   try {
-    const parsed = JSON.parse(raw) as PendingClaim
-    return parsed.version === CURRENT_VERSION ? parsed : null
+    const raw = storage.getItem(PENDING_CLAIM_KEY)
+    if (!raw) return null
+
+    const parsed: unknown = JSON.parse(raw)
+    return isValidPendingClaim(parsed) ? parsed : null
   } catch {
+    // Covers a getItem that throws (blocked site data, restrictive
+    // extensions, a post-access SecurityError) as well as malformed JSON.
     return null
   }
 }
@@ -100,6 +142,10 @@ export function loadPendingClaim(
   address: string,
   storage: Storage | null = defaultStorage(),
 ): PendingClaim | null {
+  // Guards against an empty-string caller matching an equally-empty address
+  // on a corrupted record — `isValidPendingClaim` already requires a
+  // non-empty `address`, but this keeps the two checks independent.
+  if (!address) return null
   const claim = read(storage)
   if (!claim) return null
   return claim.address === address ? claim : null
