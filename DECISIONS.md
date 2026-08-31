@@ -13,9 +13,8 @@ reducer returns.
 
 Guards live in the reducer, not components: an illegal event (a second
 `SUBMIT` while busy) returns the state unchanged, so a component that
-forgets a `disabled` attribute still cannot double-spend. The button's
-`disabled` reads the same `isBusy` predicate the reducer guards on, so the
-two cannot drift.
+forgets a `disabled` attribute cannot double-spend. The button's `disabled`
+reads the same `isBusy` predicate, so the two cannot drift.
 
 ## Quote invalidation
 
@@ -35,13 +34,12 @@ factor or API key.
 
 Chosen over `sessionStorage` because recovery must survive a closed tab;
 over IndexedDB because the payload is one small JSON object. The `v1`
-suffix lets the shape change without stranding an old claim — a mismatch
-reads as "no pending claim", not a crash.
+suffix lets the shape change without stranding an old claim.
 
 A claim resumes only if its stored address matches the connected wallet.
 One left by another wallet is neither resumed nor deleted: only that wallet
-can derive the blinding factor, so resuming elsewhere would fail and
-deleting would destroy its owner's recovery path.
+can derive the blinding factor, so resuming elsewhere fails and deleting
+destroys its owner's recovery path.
 
 ## The ApiClient subclass, not a Proxy
 
@@ -49,8 +47,8 @@ deleting would destroy its owner's recovery path.
 object cannot be passed to `planSwap`. `PinnedApiClient` subclasses it,
 overriding only `getRoute` to add `pool_key`; every other method inherits
 unchanged — the delegation the spec asks for, with no rebinding to
-get wrong. A `Proxy` was rejected: delegated methods would still need
-explicit rebinding, hiding the one method that differs.
+get wrong. A `Proxy` would still need explicit rebinding, hiding the one
+method that differs.
 
 ## UX decisions
 
