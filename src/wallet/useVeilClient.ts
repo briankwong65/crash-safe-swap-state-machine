@@ -17,11 +17,13 @@ import { useApiKey } from '../api/apiKeyContext'
  * the single pool baked into `src/config.ts`.
  */
 export function useVeilClient() {
-  const { wallet, connected } = useWallet()
+  const { wallet, connected, transactionStatus } = useWallet()
   const { apiKey } = useApiKey()
 
   return useMemo(() => {
-    if (!connected || !wallet?.adapter || !apiKey) return { client: null, api: null }
+    if (!connected || !wallet?.adapter || !apiKey) {
+      return { client: null, api: null, transactionStatus }
+    }
 
     const api = new PinnedApiClient({
       apiToken: apiKey,
@@ -51,8 +53,8 @@ export function useVeilClient() {
       shieldSwapActions({ api }),
     )
 
-    return { client, api }
-  }, [connected, wallet?.adapter, apiKey])
+    return { client, api, transactionStatus }
+  }, [connected, wallet?.adapter, apiKey, transactionStatus])
 }
 
 export type VeilClient = NonNullable<ReturnType<typeof useVeilClient>['client']>

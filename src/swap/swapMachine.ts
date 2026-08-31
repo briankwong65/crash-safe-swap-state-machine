@@ -89,6 +89,14 @@ export function swapReducer(
         ? { tag: 'requestPending', quote: state.quote, requestTxId: event.requestTxId }
         : state
 
+    case 'REQUEST_ID_RESOLVED':
+      // Shield returns its own request handle from a write; the on-chain id
+      // only exists once the wallet has broadcast. Swap it in so the explorer
+      // link and every later chain read use the real transaction.
+      return state.tag === 'requestPending'
+        ? { ...state, requestTxId: event.requestTxId }
+        : state
+
     case 'REQUEST_CONFIRMED':
       return state.tag === 'requestPending'
         ? {

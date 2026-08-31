@@ -2,7 +2,7 @@ import { SwapOutputNotFinalizedError, deriveSwapId } from '@provablehq/shield-sw
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   TransactionRejectedError,
-  claimWithRetry,
+  claimWithRetry, resolveOnChainTransactionId,
   recoverSwapIdentity,
   submitSwapRequest,
   waitForTransaction,
@@ -147,7 +147,7 @@ describe('waitForTransaction', () => {
         { client: {} as never, api: {} as never, fetchImpl, sleep: noSleep },
         'at1req',
       ),
-    ).resolves.toBeUndefined()
+    ).resolves.toBe('at1req')
   })
 
   it('keeps polling while the transaction has not landed yet (404, then accepted)', async () => {
@@ -435,5 +435,63 @@ describe('claimWithRetry', () => {
 
     expect(claimSwapOutput).not.toHaveBeenCalled()
     expect(swap).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveOnChainTransactionId', () => {
+  it('passes an at1 id straight through without asking the wallet', async () => {
+    const transactionStatus = vi.fn()
+    const id = await resolveOnChainTransactionId(
+      { client: {} as never, api: {} as never, transactionStatus, sleep: noSleep },
+      'at1already',
+    )
+    expect(id).toBe('at1already')
+    expect(transactionStatus).not.toHaveBeenCalled()
+  })
+
+  it('resolves a Shield request handle to the on-chain id', async () => {
+    const transactionStatus = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 'pending' })
+      .mockResolvedValueOnce({ status: 'accepted', transactionId: 'at1real' })
+
+    const id = await resolveOnChainTransactionId(
+      { client: {} as never, api: {} as never, transactionStatus, sleep: noSleep },
+      'shield_1788213597766_1rrmgl6duam',
+    )
+    expect(id).toBe('at1real')
+    expect(transactionStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails fast when the wallet reports the write rejected', async () => {
+    const transactionStatus = vi.fn(async () => ({ status: 'rejected', error: 'user declined' }))
+    await expect(
+      resolveOnChainTransactionId(
+        { client: {} as never, api: {} as never, transactionStatus, sleep: noSleep },
+        'shield_abc',
+      ),
+    ).rejects.toThrow(/rejected/i)
+    expect(transactionStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('explains itself when the wallet status lookup is unavailable', async () => {
+    await expect(
+      resolveOnChainTransactionId(
+        { client: {} as never, api: {} as never, sleep: noSleep },
+        'shield_abc',
+      ),
+    ).rejects.toThrow(/status lookup is unavailable/i)
+  })
+
+  it('gives up after the ceiling without claiming success', async () => {
+    const transactionStatus = vi.fn(async () => ({ status: 'pending' }))
+    await expect(
+      resolveOnChainTransactionId(
+        { client: {} as never, api: {} as never, transactionStatus, sleep: noSleep },
+        'shield_abc',
+        { attempts: 3 },
+      ),
+    ).rejects.toThrow(/did not return a transaction id/i)
+    expect(transactionStatus).toHaveBeenCalledTimes(3)
   })
 })

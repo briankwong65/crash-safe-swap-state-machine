@@ -41,6 +41,8 @@ export type UseSwapFlowArgs = {
   api: ApiClient | null
   tokens: { aleo: TokenInfo; eth: TokenInfo } | null
   onClaimed?: () => void
+  /** Wallet adapter status lookup, used to resolve its request handle to an on-chain id. */
+  transactionStatus?: (id: string) => Promise<{ status: string; transactionId?: string; error?: string }>
   effects?: Partial<SwapFlowEffects>
 }
 
@@ -124,8 +126,12 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
   // so callbacks that depend on it don't silently go stale when some
   // unrelated prop (e.g. `state`) triggers a re-render.
   const deps = useMemo(
-    () => ({ client: args.client as never, api: args.api as ApiClient }),
-    [args.client, args.api],
+    () => ({
+      client: args.client as never,
+      api: args.api as ApiClient,
+      ...(args.transactionStatus ? { transactionStatus: args.transactionStatus } : {}),
+    }),
+    [args.client, args.api, args.transactionStatus],
   )
 
   const fail = useCallback((error: unknown) => {
@@ -190,8 +196,12 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
       // "Could not read the swap id" — exactly what a reload during
       // `requestPending` (request submitted, not yet confirmed) would hit
       // without this wait.
-      await effects.waitForTransaction(deps, requestTxId)
-      const identity = await effects.recoverIdentity(deps, requestTxId, handle)
+      const onChainId = await effects.waitForTransaction(deps, requestTxId)
+      if (onChainId !== requestTxId) {
+        handle.transactionId = onChainId
+        dispatch({ type: 'REQUEST_ID_RESOLVED', requestTxId: onChainId })
+      }
+      const identity = await effects.recoverIdentity(deps, onChainId, handle)
       handle.swapId = identity.swapId
       handle.blindedAddress = identity.blindedAddress
 
@@ -402,7 +412,13 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
 
           dispatch({ type: 'REQUEST_SUBMITTED', requestTxId: handle.transactionId })
 
-          await effects.waitForTransaction(deps, handle.transactionId)
+          // Shield returns its own request handle, not an Aleo transaction id;
+          // waitForTransaction resolves it and hands back the on-chain id.
+          const onChainId = await effects.waitForTransaction(deps, handle.transactionId)
+          if (onChainId !== handle.transactionId) {
+            handle.transactionId = onChainId
+            dispatch({ type: 'REQUEST_ID_RESOLVED', requestTxId: onChainId })
+          }
           dispatch({ type: 'REQUEST_CONFIRMED' })
 
           const identity = await effects.recoverIdentity(deps, handle.transactionId, handle)

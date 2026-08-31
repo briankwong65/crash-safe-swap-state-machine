@@ -16,6 +16,67 @@ export type ExecuteDeps = {
   nodeUrl?: string
   fetchImpl?: typeof fetch
   sleep?: (ms: number) => Promise<void>
+  /**
+   * The wallet adapter's transaction-status lookup.
+   *
+   * Shield returns its own request handle (`shield_<ts>_<rand>`) from a write,
+   * not an Aleo transaction id — the on-chain id only exists once the wallet
+   * has proved and broadcast. Every chain read and every explorer link needs
+   * the real `at1…` id, and this is the only way to obtain it.
+   */
+  transactionStatus?: (id: string) => Promise<{ status: string; transactionId?: string; error?: string }>
+}
+
+/** Aleo transaction ids are bech32m with an `at1` prefix; wallet handles are not. */
+export function isOnChainTransactionId(id: string): boolean {
+  return id.startsWith('at1')
+}
+
+/**
+ * Resolves a wallet request handle into the on-chain transaction id.
+ *
+ * Returns the id unchanged when it is already an `at1…`. Polls the wallet
+ * otherwise, and fails fast when the wallet reports the write rejected or
+ * failed rather than burning the whole confirmation budget on a dead write.
+ */
+export async function resolveOnChainTransactionId(
+  deps: ExecuteDeps,
+  id: string,
+  options: { attempts?: number; intervalMs?: number } = {},
+): Promise<string> {
+  if (isOnChainTransactionId(id)) return id
+
+  if (!deps.transactionStatus) {
+    throw new Error(
+      `Cannot resolve wallet request ${id} to a transaction id — the wallet's status lookup is unavailable. Reconnect the wallet and resume; do not submit another swap.`,
+    )
+  }
+
+  const attempts = options.attempts ?? TIMING.confirmationAttempts
+  const intervalMs = options.intervalMs ?? TIMING.confirmationIntervalMs
+  const sleep = depsSleep(deps)
+
+  let lastStatus = 'unknown'
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const result = await deps.transactionStatus(id).catch(() => null)
+    if (result) {
+      lastStatus = result.status
+      if (result.transactionId && isOnChainTransactionId(result.transactionId)) {
+        return result.transactionId
+      }
+      const status = result.status.toLowerCase()
+      if (status === 'rejected' || status === 'failed') {
+        throw new Error(
+          `The wallet reported the swap request ${status}${result.error ? `: ${result.error}` : ''}. Nothing was spent; you can try again.`,
+        )
+      }
+    }
+    if (attempt < attempts) await sleep(intervalMs)
+  }
+
+  throw new Error(
+    `The wallet did not return a transaction id for request ${id} within ${(attempts * intervalMs) / 1000}s (last status: ${lastStatus}). It may still land — reload and resume rather than swapping again.`,
+  )
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -157,28 +218,31 @@ export async function waitForTransaction(
   deps: ExecuteDeps,
   txId: string,
   options: { attempts?: number; intervalMs?: number; onAttempt?: (n: number) => void } = {},
-): Promise<void> {
+): Promise<string> {
   const attempts = options.attempts ?? TIMING.confirmationAttempts
   const intervalMs = options.intervalMs ?? TIMING.confirmationIntervalMs
   const sleep = depsSleep(deps)
 
+  // A wallet handle is not readable on chain; resolve it first.
+  const onChainId = await resolveOnChainTransactionId(deps, txId, options)
+
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     options.onAttempt?.(attempt)
-    const confirmed = await readConfirmedTransaction(deps, txId).catch(() => null)
+    const confirmed = await readConfirmedTransaction(deps, onChainId).catch(() => null)
 
     if (confirmed?.status === 'rejected') {
-      throw new TransactionRejectedError(txId)
+      throw new TransactionRejectedError(onChainId)
     }
 
     if (confirmed?.status === 'accepted' && confirmed.transaction?.execution?.transitions?.length) {
-      return
+      return onChainId
     }
 
     if (attempt < attempts) await sleep(intervalMs)
   }
 
   throw new Error(
-    `Transaction ${txId} was not confirmed within ${(attempts * intervalMs) / 1000}s. It may still land — reload and resume the claim rather than swapping again.`,
+    `Transaction ${onChainId} was not confirmed within ${(attempts * intervalMs) / 1000}s. It may still land — reload and resume the claim rather than swapping again.`,
   )
 }
 

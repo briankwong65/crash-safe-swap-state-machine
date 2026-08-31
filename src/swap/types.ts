@@ -96,6 +96,7 @@ export type SwapFlowEvent =
   | { type: 'QUOTE_FAILED'; error: FlowError }
   | { type: 'SUBMIT'; inputs: QuoteInputs }
   | { type: 'REQUEST_SUBMITTED'; requestTxId: string }
+  | { type: 'REQUEST_ID_RESOLVED'; requestTxId: string }
   | { type: 'REQUEST_CONFIRMED' }
   | { type: 'FINALIZE_RETRY'; attempt: number }
   | { type: 'CLAIM' }

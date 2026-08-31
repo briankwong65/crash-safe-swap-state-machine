@@ -13,7 +13,7 @@ import { useWalletSession } from './wallet/useWalletSession'
 export function Shell() {
   const session = useWalletSession()
   const { setApiKey } = useApiKey()
-  const { client, api } = useVeilClient()
+  const { client, api, transactionStatus } = useVeilClient()
   const { tokens, error: tokenError } = useTokens()
   const { balances, loading: balancesLoading, refresh } = useBalances(session.address)
 
@@ -21,6 +21,7 @@ export function Shell() {
     address: session.address,
     client,
     api,
+    transactionStatus,
     tokens,
     onClaimed: refresh,
   })

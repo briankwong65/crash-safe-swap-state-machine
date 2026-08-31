@@ -57,7 +57,7 @@ function makeArgs(overrides: Record<string, unknown> = {}) {
     effects: {
       fetchQuote: vi.fn(),
       submitSwap: vi.fn(),
-      waitForTransaction: vi.fn(async () => {}),
+      waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
       recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
       claim: vi.fn(),
     },
@@ -94,7 +94,7 @@ describe('useSwapFlow resume', () => {
       effects: {
         fetchQuote: vi.fn(),
         submitSwap: vi.fn(),
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim: vi.fn(() => new Promise(() => {})),
       },
@@ -152,7 +152,7 @@ describe('useSwapFlow submission', () => {
       effects: {
         fetchQuote: vi.fn(async () => quote),
         submitSwap: vi.fn(async () => handle),
-        waitForTransaction: vi.fn(async () => {
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => {
           waitCalls += 1
           if (waitCalls === 1) {
             // The assertion that matters: by the moment the request
@@ -161,6 +161,7 @@ describe('useSwapFlow submission', () => {
             // it — that ordering is the entire point of crash recovery.
             persistedBeforeFirstWait = loadPendingClaim(OWNER) !== null
           }
+          return id
         }),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim: vi.fn(async () => ({
@@ -192,7 +193,7 @@ describe('useSwapFlow submission', () => {
       effects: {
         fetchQuote: vi.fn(async () => quote),
         submitSwap,
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(),
         claim: vi.fn(),
       },
@@ -235,9 +236,10 @@ describe('useSwapFlow resumeClaim (RETRY_CLAIM)', () => {
       effects: {
         fetchQuote: vi.fn(async () => quote),
         submitSwap,
-        waitForTransaction: vi.fn(async () => {
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => {
           waitCalls += 1
           if (waitCalls === 1) throw new Error('node unreachable')
+          return id
         }),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim,
@@ -269,7 +271,7 @@ describe('useSwapFlow resumeClaim (RETRY_CLAIM)', () => {
 
   it('resumeClaim is a no-op when there is nothing to resume', async () => {
     const claim = vi.fn()
-    const args = makeArgs({ effects: { fetchQuote: vi.fn(), submitSwap: vi.fn(), waitForTransaction: vi.fn(), recoverIdentity: vi.fn(), claim } })
+    const args = makeArgs({ effects: { fetchQuote: vi.fn(), submitSwap: vi.fn(), waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id), recoverIdentity: vi.fn(), claim } })
 
     const { result } = renderHook(() => useSwapFlow(args as never))
     await waitFor(() => expect(result.current.state.tag).toBe('idle'))
@@ -312,7 +314,7 @@ describe('useSwapFlow reset', () => {
       effects: {
         fetchQuote: vi.fn(async () => quote),
         submitSwap: vi.fn(async () => handle),
-        waitForTransaction: vi.fn(async () => {
+        waitForTransaction: vi.fn(async (_deps: unknown, _id: string) => {
           throw new Error('node unreachable')
         }),
         recoverIdentity: vi.fn(),
@@ -368,7 +370,7 @@ describe('useSwapFlow automatic reload recovery (Finding 1, fix round 1)', () =>
       effects: {
         fetchQuote: vi.fn(),
         submitSwap,
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim,
       },
@@ -405,6 +407,7 @@ describe('useSwapFlow automatic reload recovery (Finding 1, fix round 1)', () =>
 
     const waitForTransaction = vi.fn(async (_deps: unknown, txId: string) => {
       if (txId === 'at1req') waitedForRequestTxBeforeIdentityCall = true
+      return txId
     })
     const recoverIdentity = vi.fn(async () => {
       // Must run only after the request transaction has been confirmed —
@@ -450,7 +453,7 @@ describe('useSwapFlow automatic reload recovery (Finding 1, fix round 1)', () =>
       effects: {
         fetchQuote: vi.fn(),
         submitSwap: vi.fn(),
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim,
       },
@@ -483,7 +486,7 @@ describe('useSwapFlow automatic reload recovery (Finding 1, fix round 1)', () =>
       effects: {
         fetchQuote: vi.fn(),
         submitSwap: vi.fn(),
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim,
       },
@@ -548,7 +551,7 @@ describe('useSwapFlow deps memoization (Finding 2, fix round 1)', () => {
       effects: {
         fetchQuote: vi.fn(async () => quote),
         submitSwap,
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim: vi.fn(async () => ({
           transactionId: 'at1claim',
@@ -601,7 +604,7 @@ describe('useSwapFlow deps memoization (Finding 2, fix round 1)', () => {
       effects: {
         fetchQuote: vi.fn(),
         submitSwap: vi.fn(),
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim,
       },
@@ -681,7 +684,7 @@ describe('useSwapFlow cross-instance claim dedup (Finding, fix round 2)', () => 
       effects: {
         fetchQuote: vi.fn(),
         submitSwap: vi.fn(),
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim,
       },
@@ -719,7 +722,7 @@ describe('useSwapFlow cross-instance claim dedup (Finding, fix round 2)', () => 
       effects: {
         fetchQuote: vi.fn(),
         submitSwap: vi.fn(),
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim,
       },
@@ -756,7 +759,7 @@ describe('useSwapFlow cross-instance claim dedup (Finding, fix round 2)', () => 
       effects: {
         fetchQuote: vi.fn(),
         submitSwap: vi.fn(),
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim,
       },
@@ -792,7 +795,7 @@ describe('useSwapFlow cross-instance claim dedup (Finding, fix round 2)', () => 
       effects: {
         fetchQuote: vi.fn(),
         submitSwap: vi.fn(),
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim,
       },
@@ -820,7 +823,7 @@ describe('useSwapFlow cross-instance claim dedup (Finding, fix round 2)', () => 
       effects: {
         fetchQuote: vi.fn(async () => quote),
         submitSwap: vi.fn(async () => handle),
-        waitForTransaction: vi.fn(async () => {}),
+        waitForTransaction: vi.fn(async (_deps: unknown, id: string) => id),
         recoverIdentity: vi.fn(async () => ({ swapId: 's', blindedAddress: 'aleo1b' })),
         claim,
       },
