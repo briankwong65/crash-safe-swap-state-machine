@@ -160,6 +160,7 @@ describe('resume and failure', () => {
       tag: 'recoverableError',
       error: { message: 'node unreachable', kind: 'recoverable' },
       requestTxId: 'at1req',
+      quote,
     })
   })
 
@@ -203,6 +204,7 @@ describe('resume and failure', () => {
       error: { message: 'claim indexer timeout', kind: 'recoverable' },
       requestTxId: 'at1req',
       claimTxId: 'at1claim',
+      quote,
     })
   })
 
@@ -266,6 +268,7 @@ describe('resume and failure', () => {
       error: { message: 'claim broadcast failed', kind: 'recoverable' },
       requestTxId: 'at1req',
       claimTxId: 'claim1',
+      quote,
     })
 
     state = swapReducer(state, { type: 'INPUT_CHANGED' })
@@ -282,5 +285,99 @@ describe('resume and failure', () => {
     if (state.tag === 'recoverableError') {
       expect(state.claimTxId).toBe('claim1')
     }
+  })
+})
+
+describe('RETRY_CLAIM', () => {
+  // Closes the gap a Task 3 review found: the UI's "Resume claim" button
+  // dispatches CLAIM from an error state, which the reducer has always
+  // (correctly) ignored, leaving the button looking dead. RETRY_CLAIM is the
+  // additive event that actually re-enters the flow from that error state.
+
+  it('resumes a recoverableError with a requestTxId into outputFinalizing', () => {
+    const errorState: SwapFlowState = {
+      tag: 'recoverableError',
+      error: { message: 'claim indexer timeout', kind: 'recoverable' },
+      requestTxId: 'at1req',
+      quote,
+    }
+    expect(swapReducer(errorState, { type: 'RETRY_CLAIM' })).toEqual({
+      tag: 'outputFinalizing',
+      quote,
+      requestTxId: 'at1req',
+      attempt: 0,
+    })
+  })
+
+  it('resumes a terminalError with a requestTxId into outputFinalizing', () => {
+    const errorState: SwapFlowState = {
+      tag: 'terminalError',
+      error: { message: 'claim indexer timeout', kind: 'terminal' },
+      requestTxId: 'at1req',
+      quote,
+    }
+    expect(swapReducer(errorState, { type: 'RETRY_CLAIM' })).toEqual({
+      tag: 'outputFinalizing',
+      quote,
+      requestTxId: 'at1req',
+      attempt: 0,
+    })
+  })
+
+  it('is a no-op from an error state with no requestTxId', () => {
+    const errorState: SwapFlowState = {
+      tag: 'terminalError',
+      error: { message: 'route used the wrong pool', kind: 'terminal' },
+    }
+    expect(swapReducer(errorState, { type: 'RETRY_CLAIM' })).toEqual(errorState)
+  })
+
+  it('is a no-op from an error state with a requestTxId but no quote (hand-built, defensive)', () => {
+    const errorState: SwapFlowState = {
+      tag: 'recoverableError',
+      error: { message: 'node unreachable', kind: 'recoverable' },
+      requestTxId: 'at1req',
+    }
+    expect(swapReducer(errorState, { type: 'RETRY_CLAIM' })).toEqual(errorState)
+  })
+
+  it.each([
+    { tag: 'idle' } as SwapFlowState,
+    quoted,
+    { tag: 'quoteError', error: { message: 'x', kind: 'recoverable' } } as SwapFlowState,
+    { tag: 'awaitingRequestApproval', quote } as SwapFlowState,
+    { tag: 'requestPending', quote, requestTxId: 'at1req' } as SwapFlowState,
+    { tag: 'outputFinalizing', quote, requestTxId: 'at1req', attempt: 1 } as SwapFlowState,
+    { tag: 'awaitingClaimApproval', quote, requestTxId: 'at1req' } as SwapFlowState,
+    { tag: 'claimPending', quote, requestTxId: 'at1req' } as SwapFlowState,
+  ])('is a no-op from $tag — never a route into or out of a busy state elsewhere', (state) => {
+    expect(swapReducer(state, { type: 'RETRY_CLAIM' })).toEqual(state)
+  })
+
+  it('never routes to awaitingRequestApproval or requestPending, so it cannot trigger a second submit', () => {
+    const errorState: SwapFlowState = {
+      tag: 'recoverableError',
+      error: { message: 'node unreachable', kind: 'recoverable' },
+      requestTxId: 'at1req',
+      quote,
+    }
+    const next = swapReducer(errorState, { type: 'RETRY_CLAIM' })
+    expect(next.tag).not.toBe('awaitingRequestApproval')
+    expect(next.tag).not.toBe('requestPending')
+    expect(next.tag).toBe('outputFinalizing')
+  })
+
+  it('a real FAILED-produced error state carries the quote RETRY_CLAIM needs', () => {
+    const pending: SwapFlowState = { tag: 'requestPending', quote, requestTxId: 'at1req' }
+    const failed = swapReducer(pending, {
+      type: 'FAILED',
+      error: { message: 'node unreachable', kind: 'recoverable' },
+    })
+    expect(swapReducer(failed, { type: 'RETRY_CLAIM' })).toEqual({
+      tag: 'outputFinalizing',
+      quote,
+      requestTxId: 'at1req',
+      attempt: 0,
+    })
   })
 })

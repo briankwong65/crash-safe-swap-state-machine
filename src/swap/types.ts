@@ -68,8 +68,26 @@ export type SwapFlowState =
       tokenOutDecimals: number
       tokenOutSymbol: string
     }
-  | { tag: 'recoverableError'; error: FlowError; requestTxId?: string; claimTxId?: string }
-  | { tag: 'terminalError'; error: FlowError; requestTxId?: string; claimTxId?: string }
+  | {
+      tag: 'recoverableError'
+      error: FlowError
+      requestTxId?: string
+      claimTxId?: string
+      /**
+       * The quote in force when the trade failed, carried along so `RETRY_CLAIM`
+       * can rebuild `outputFinalizing` without the reducer reaching outside
+       * itself for one. Present whenever `requestTxId` is, because every state
+       * that can fail with a `requestTxId` also carries a `quote`.
+       */
+      quote?: Quote
+    }
+  | {
+      tag: 'terminalError'
+      error: FlowError
+      requestTxId?: string
+      claimTxId?: string
+      quote?: Quote
+    }
 
 export type SwapFlowEvent =
   | { type: 'INPUT_CHANGED' }
@@ -91,4 +109,5 @@ export type SwapFlowEvent =
     }
   | { type: 'FAILED'; error: FlowError }
   | { type: 'RESUME'; quote: Quote; requestTxId: string }
+  | { type: 'RETRY_CLAIM' }
   | { type: 'RESET' }

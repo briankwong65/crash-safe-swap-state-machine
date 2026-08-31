@@ -1,4 +1,4 @@
-import type { QuoteInputs, SwapFlowEvent, SwapFlowState } from './types'
+import type { Quote, QuoteInputs, SwapFlowEvent, SwapFlowState } from './types'
 
 export const initialState: SwapFlowState = { tag: 'idle' }
 
@@ -31,6 +31,11 @@ function requestIdOf(state: SwapFlowState): string | undefined {
 /** The claim id, where the current state carries one. */
 function claimIdOf(state: SwapFlowState): string | undefined {
   return 'claimTxId' in state ? state.claimTxId : undefined
+}
+
+/** The quote in force, where the current state carries one. */
+function quoteOf(state: SwapFlowState): Quote | undefined {
+  return 'quote' in state ? state.quote : undefined
 }
 
 /**
@@ -146,9 +151,30 @@ export function swapReducer(
       if (state.tag === 'complete') return state
       const requestTxId = requestIdOf(state)
       const claimTxId = claimIdOf(state)
+      // Carried so a later RETRY_CLAIM can rebuild outputFinalizing without
+      // this reducer reaching outside itself for a quote.
+      const quote = quoteOf(state)
       return event.error.kind === 'terminal'
-        ? { tag: 'terminalError', error: event.error, requestTxId, claimTxId }
-        : { tag: 'recoverableError', error: event.error, requestTxId, claimTxId }
+        ? { tag: 'terminalError', error: event.error, requestTxId, claimTxId, quote }
+        : { tag: 'recoverableError', error: event.error, requestTxId, claimTxId, quote }
+    }
+
+    case 'RETRY_CLAIM': {
+      // Only an error state that was already past the request — i.e. still
+      // holding both the requestTxId and the quote it failed with — can be
+      // retried. A quoteless error (nothing submitted yet) or one missing a
+      // requestTxId (nothing to resume) is left exactly where it is; this is
+      // never a route into a busy state from anywhere but that specific spot,
+      // and it never leads to `awaitingRequestApproval`/`requestPending`, so
+      // it can never trigger a second `submitSwapRequest`.
+      if (state.tag !== 'recoverableError' && state.tag !== 'terminalError') return state
+      if (state.requestTxId === undefined || state.quote === undefined) return state
+      return {
+        tag: 'outputFinalizing',
+        quote: state.quote,
+        requestTxId: state.requestTxId,
+        attempt: 0,
+      }
     }
   }
 }
