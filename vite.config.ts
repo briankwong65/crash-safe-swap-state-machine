@@ -11,6 +11,15 @@ export default defineConfig({
         secure: true,
         rewrite: (path) => path.replace(/^\/shield-api/, ''),
       },
+      // The Aleo node needs proxying for the same reason as the DEX API: the
+      // browser blocks the cross-origin read, which takes down every chain read
+      // the quote depends on.
+      '/aleo-api': {
+        target: 'https://api.provable.com/v2',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/aleo-api/, ''),
+      },
     },
   },
   test: {

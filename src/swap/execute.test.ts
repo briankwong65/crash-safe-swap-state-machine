@@ -126,7 +126,12 @@ describe('waitForTransaction', () => {
       'at1req',
     )
 
-    expect(fetchImpl).toHaveBeenCalledWith('https://api.provable.com/v2/testnet/transaction/confirmed/at1req')
+    // Asserts the PATH, not the origin: the base URL is proxied in dev and
+    // direct in production, but the confirmed-endpoint path is the requirement.
+    const [firstCall] = fetchImpl.mock.calls
+    const requested = String((firstCall as unknown as [string])[0])
+    expect(requested.endsWith('/testnet/transaction/confirmed/at1req')).toBe(true)
+    expect(requested).not.toContain('/testnet/transaction/at1req')
   })
 
   it('resolves once the transaction is confirmed accepted with transitions (Fix 4: accepted, not merely readable)', async () => {

@@ -2,7 +2,20 @@
 export const POOL_KEY =
   '5905392528088736716502352327676815883959790811081903315511484137973858480171field'
 
-export const ALEO_NODE_URL = 'https://api.provable.com/v2'
+export const ALEO_NODE_ORIGIN = 'https://api.provable.com/v2'
+
+/**
+ * Chain reads go through the Vite proxy in dev for the same reason the DEX API
+ * does — the browser blocks the cross-origin request, and a failed read takes
+ * down quoting and transaction confirmation alike. Absolute, because the SDK's
+ * HTTP transport and our own transaction reads both build URLs from it.
+ */
+function devAleoNodeUrl(): string {
+  const origin = globalThis.location?.origin
+  return origin ? `${origin}/aleo-api` : ALEO_NODE_ORIGIN
+}
+
+export const ALEO_NODE_URL = import.meta.env.DEV ? devAleoNodeUrl() : ALEO_NODE_ORIGIN
 
 export const DEX_API_ORIGIN = 'https://api.testnet.swap.shield.fi'
 
