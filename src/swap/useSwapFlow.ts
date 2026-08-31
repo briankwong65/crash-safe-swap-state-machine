@@ -1,5 +1,5 @@
 import type { ApiClient, SwapHandle, TokenInfo } from '@provablehq/shield-swap-sdk'
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { PROGRAMS } from '../config'
 import {
   claimWithRetry,
@@ -68,64 +68,29 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
   const handleRef = useRef<SwapHandle | null>(null)
   /** The direction of the trade in flight, so a resumed claim knows its output token. */
   const directionRef = useRef<QuoteInputs['direction'] | null>(null)
+  /**
+   * Set once the mount-time resume effect has made its single automatic claim
+   * attempt, so a later re-run of that effect (e.g. `args.tokens` resolving
+   * after `args.address`, or an unrelated client/api reconnect) can never
+   * fire a second unsolicited claim. A failed automatic attempt still leaves
+   * the machine in an error state with `requestTxId` set, which is exactly
+   * what surfaces the manual "Resume claim" button (`resumeClaim`) — this
+   * ref only bounds the *automatic* attempt to at most one.
+   */
+  const autoResumeAttempted = useRef(false)
 
-  const deps = { client: args.client as never, api: args.api as ApiClient }
+  // Stable across renders unless the underlying client/api actually change,
+  // so callbacks that depend on it don't silently go stale when some
+  // unrelated prop (e.g. `state`) triggers a re-render.
+  const deps = useMemo(
+    () => ({ client: args.client as never, api: args.api as ApiClient }),
+    [args.client, args.api],
+  )
 
   const fail = useCallback((error: unknown) => {
     dispatch({ type: 'FAILED', error: classifyQuoteError(error) })
     inFlight.current = false
   }, [])
-
-  // Resume a persisted claim, but only for the wallet that made it.
-  useEffect(() => {
-    if (!args.address) return
-
-    const own = loadPendingClaim(args.address)
-    if (!own) {
-      const otherOwner = peekPendingClaimAddress()
-      setBlockedByOtherWallet(otherOwner && otherOwner !== args.address ? otherOwner : null)
-      return
-    }
-
-    setBlockedByOtherWallet(null)
-    handleRef.current = deserializeHandle(own.handle)
-    directionRef.current = own.direction
-
-    const tokens = args.tokens
-    const resumedQuote: Quote = {
-      inputs: {
-        direction: own.direction,
-        amountRaw: BigInt(own.amountInRaw),
-        slippageBps: 0,
-      },
-      expectedOut: 0n,
-      minOut: 0n,
-      poolKey: own.handle.poolKey,
-      tokenOutDecimals:
-        own.direction === 'aleoToEth' ? (tokens?.eth.decimals ?? 18) : (tokens?.aleo.decimals ?? 6),
-      tokenOutSymbol: own.direction === 'aleoToEth' ? 'ETH' : 'ALEO',
-    }
-
-    dispatch({ type: 'RESUME', quote: resumedQuote, requestTxId: own.requestTxId })
-  }, [args.address, args.tokens])
-
-  const requestQuote = useCallback(
-    (inputs: QuoteInputs) => {
-      if (!args.api || !args.tokens || isBusy(state)) return
-      dispatch({ type: 'QUOTE_REQUESTED', inputs })
-
-      const { tokenIn, tokenOut } = tokensFor(args.tokens, inputs.direction)
-      effects
-        .fetchQuote(deps, { inputs, tokenIn, tokenOut })
-        .then((quote) => dispatch({ type: 'QUOTE_RECEIVED', quote }))
-        .catch((error: unknown) =>
-          dispatch({ type: 'QUOTE_FAILED', error: classifyQuoteError(error) }),
-        )
-    },
-    [args.api, args.tokens, state],
-  )
-
-  const invalidateQuote = useCallback(() => dispatch({ type: 'INPUT_CHANGED' }), [])
 
   const runClaim = useCallback(
     async (handle: SwapHandle, direction: QuoteInputs['direction']) => {
@@ -152,8 +117,93 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
       clearPendingClaim()
       args.onClaimed?.()
     },
-    [args.tokens, args.onClaimed],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [deps, args.tokens, args.onClaimed],
   )
+
+  // Resume a persisted claim, but only for the wallet that made it.
+  useEffect(() => {
+    if (!args.address) {
+      // Nothing connected to be blocked on anymore — don't leave a stale
+      // owner address displayed from a wallet that has since disconnected.
+      setBlockedByOtherWallet(null)
+      return
+    }
+
+    const own = loadPendingClaim(args.address)
+    if (!own) {
+      const otherOwner = peekPendingClaimAddress()
+      setBlockedByOtherWallet(otherOwner && otherOwner !== args.address ? otherOwner : null)
+      return
+    }
+
+    setBlockedByOtherWallet(null)
+    const handle = deserializeHandle(own.handle)
+    handleRef.current = handle
+    directionRef.current = own.direction
+
+    const tokens = args.tokens
+    const resumedQuote: Quote = {
+      inputs: {
+        direction: own.direction,
+        amountRaw: BigInt(own.amountInRaw),
+        slippageBps: 0,
+      },
+      expectedOut: 0n,
+      minOut: 0n,
+      poolKey: own.handle.poolKey,
+      tokenOutDecimals:
+        own.direction === 'aleoToEth' ? (tokens?.eth.decimals ?? 18) : (tokens?.aleo.decimals ?? 6),
+      tokenOutSymbol: own.direction === 'aleoToEth' ? 'ETH' : 'ALEO',
+    }
+
+    dispatch({ type: 'RESUME', quote: resumedQuote, requestTxId: own.requestTxId })
+
+    // The primary crash-recovery path: a reload while a request is pending
+    // restores `outputFinalizing` above, but there is no "Resume claim"
+    // button for that tag — only the error states get one (see
+    // `resumeClaim`) — so nothing else would ever drive it forward. The
+    // claim must start itself here.
+    //
+    // `autoResumeAttempted` bounds this to exactly one attempt per mounted
+    // instance regardless of how many times this effect re-runs (tokens
+    // resolving later, an unrelated client/api reconnect); `inFlight` is the
+    // same guard every other entry point (`submit`, `resumeClaim`) uses, so
+    // this can never overlap a manual call or start twice concurrently. If
+    // the automatic attempt fails, `fail` lands the machine in an error
+    // state with `requestTxId` set, and the user finishes it from there via
+    // the manual "Resume claim" button — this does not retry silently
+    // forever.
+    if (!autoResumeAttempted.current && !inFlight.current) {
+      autoResumeAttempted.current = true
+      inFlight.current = true
+      void runClaim(handle, own.direction)
+        .catch(fail)
+        .finally(() => {
+          inFlight.current = false
+        })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [args.address, args.tokens, runClaim, fail])
+
+  const requestQuote = useCallback(
+    (inputs: QuoteInputs) => {
+      if (!args.api || !args.tokens || isBusy(state)) return
+      dispatch({ type: 'QUOTE_REQUESTED', inputs })
+
+      const { tokenIn, tokenOut } = tokensFor(args.tokens, inputs.direction)
+      effects
+        .fetchQuote(deps, { inputs, tokenIn, tokenOut })
+        .then((quote) => dispatch({ type: 'QUOTE_RECEIVED', quote }))
+        .catch((error: unknown) =>
+          dispatch({ type: 'QUOTE_FAILED', error: classifyQuoteError(error) }),
+        )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [deps, args.api, args.tokens, state],
+  )
+
+  const invalidateQuote = useCallback(() => dispatch({ type: 'INPUT_CHANGED' }), [])
 
   const submit = useCallback(
     (inputs: QuoteInputs) => {
@@ -214,37 +264,56 @@ export function useSwapFlow(args: UseSwapFlowArgs) {
         }
       })()
     },
-    [args.tokens, args.address, state, runClaim, fail],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [deps, args.tokens, args.address, state, runClaim, fail],
   )
 
   /**
-   * Resumes a claim left over from a swap already submitted in this session.
+   * Resumes a claim left over from a swap already submitted, either in this
+   * session (an error state) or recovered from storage on a prior render
+   * (`outputFinalizing` — normally finished automatically by the mount
+   * effect above, but this remains a valid, safe entry point in case that
+   * automatic attempt hasn't run yet or was never applicable).
    *
-   * `CLAIM` is legal only from `outputFinalizing`, but a trade that failed
-   * after the request went through lands in `recoverableError` /
-   * `terminalError` (still carrying `requestTxId`). Dispatching `CLAIM`
-   * straight from there used to be silently ignored by the reducer while this
-   * hook went ahead and ran the claim effect anyway — the displayed state
-   * would sit frozen on the error while a claim was actually in flight
-   * underneath it. `RETRY_CLAIM` is the additive event that moves the machine
-   * back to `outputFinalizing` first, so `runClaim`'s own `CLAIM` dispatch
-   * lands somewhere it is legal and the UI reflects what is actually
-   * happening.
+   * `CLAIM` is legal directly from `outputFinalizing`, so that path runs the
+   * claim without touching the reducer first. `recoverableError` /
+   * `terminalError` are different: `CLAIM` is NOT legal there (only
+   * `outputFinalizing` accepts it), but a trade that failed after the
+   * request went through lands in one of those tags, still carrying
+   * `requestTxId`. Dispatching `CLAIM` straight from there used to be
+   * silently ignored by the reducer while this hook went ahead and ran the
+   * claim effect anyway — the displayed state would sit frozen on the error
+   * while a claim was actually in flight underneath it. `RETRY_CLAIM` is the
+   * additive event that moves the machine back to `outputFinalizing` first,
+   * so `runClaim`'s own `CLAIM` dispatch lands somewhere it is legal and the
+   * UI reflects what is actually happening.
    *
-   * The dispatch is a no-op unless `state` is genuinely one of those error
-   * states with a `requestTxId` — checked here too (not just left to the
-   * reducer) so this function never starts the claim effect while the machine
-   * itself stayed put, which would reopen the exact "effect running under a
-   * frozen display" gap this exists to close.
+   * Every branch is guarded by `inFlight` (checked here, not just left to
+   * the reducer) so this function never starts the claim effect while
+   * nothing has actually changed — which would reopen the exact "effect
+   * running under a frozen display" gap this exists to close, and would
+   * risk a second, overlapping claim call racing the automatic one.
    */
   const resumeClaim = useCallback(() => {
     const handle = handleRef.current
     const direction = directionRef.current
-    const canRetry =
+    if (!handle || !direction || inFlight.current) return
+
+    if (state.tag === 'outputFinalizing') {
+      // CLAIM is already legal here; no RETRY_CLAIM needed.
+      inFlight.current = true
+      void runClaim(handle, direction)
+        .catch(fail)
+        .finally(() => {
+          inFlight.current = false
+        })
+      return
+    }
+
+    const canRetryFromError =
       (state.tag === 'recoverableError' || state.tag === 'terminalError') &&
       state.requestTxId !== undefined
-
-    if (!handle || !direction || !canRetry || inFlight.current) return
+    if (!canRetryFromError) return
 
     dispatch({ type: 'RETRY_CLAIM' })
     inFlight.current = true
