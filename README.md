@@ -1,10 +1,16 @@
-# Private ALEO ⇄ ETH Swap Interface
+# crash-safe-swap-state-machine
 
-A React and TypeScript application that lets a user trade ALEO and ETH through one
-direct Shield Swap liquidity pool on Aleo testnet. Every signature, proof, private
-record selection, and blinded-address derivation happens inside the Shield Wallet
-browser extension; this application never sees a private key, a view key, or a
-blinding factor.
+A React and TypeScript interface for private ALEO ⇄ ETH swaps on Aleo testnet,
+built around the problem that makes these trades awkward: a private swap settles
+in **two** on-chain transactions, and between them the user's funds are committed
+but uncollected. Close the tab in that window and the only key to the output is a
+handle that must already be on disk.
+
+So the lifecycle is a pure state machine with every guard below the UI, the claim
+handle is persisted before the first wait, and a reload resumes the claim without
+ever submitting a second swap. Every signature, proof, private record selection,
+and blinded-address derivation happens inside the Shield Wallet browser extension;
+this application never sees a private key, a view key, or a blinding factor.
 
 ## Requirements
 
@@ -37,7 +43,7 @@ npm run build      # tsc --noEmit && vite build
 
 All four commands are mocked at the wallet and network boundary — none of them
 drive a real wallet or hit the live testnet API. There is no automated end-to-end
-test against a live Shield Wallet; the spec does not require one.
+test against a live Shield Wallet.
 
 ## Get a Shield Swap API key
 
@@ -72,7 +78,7 @@ stops covering native credits by default).
 3. Wait for the private ALEO and ETH balances to appear.
 4. Pick a direction (ALEO → ETH or ETH → ALEO) and enter an amount.
    **Do not enter more than 0.1 ALEO for an ALEO → ETH test** — this is the
-   spec's cap, chosen because the pool has limited depth. For an
+   deliberate cap, because the pool has limited depth. For an
    ETH → ALEO test, use no more than the ETH you received from the ALEO → ETH
    trade.
 5. Click **Get quote**. The application shows the expected output, the minimum
@@ -83,8 +89,8 @@ stops covering native credits by default).
 7. Wait for the request transaction to confirm (usually one to two minutes).
    **If you reload the page during this wait, the application resumes waiting
    for the same request and, once it confirms, resumes the claim automatically
-   — it does not submit a second swap.** This is the resume behavior the
-   spec requires; it depends on a per-wallet record kept in
+   — it does not submit a second swap.** The resume path depends on a
+   per-wallet record kept in
    `localStorage` (see `DECISIONS.md`).
 8. Once the output finalizes, approve the claim transaction in Shield Wallet.
    This second transaction collects the output into your wallet as a private
@@ -112,7 +118,7 @@ a record of what the mocked suite could not establish on its own:
 
 - The Aleo node's transaction endpoint paths and response shapes used by
   `execute.ts`. Both were confirmed live against
-  `https://api.provable.com/v2` using a known-good example
+  `https://api.provable.com/v2` using known-good example
   transactions: `GET .../testnet/transaction/{txId}` (used by
   `recoverSwapIdentity`) returns `{ type, id, execution, fee }`, and `GET
 .../testnet/transaction/confirmed/{txId}` (used by `waitForTransaction`,
@@ -136,7 +142,7 @@ a record of what the mocked suite could not establish on its own:
   that runs first. Installing the peer would activate the cross-check
   (derive, compare against the heuristic, throw on mismatch rather than
   guessing) as a second source of truth. Both heuristics were confirmed
-  against a known-good example transactions, and have since run
+  against known-good example transactions, and have since run
   correctly on both live swaps recorded above. Confirmed against the live
   testnet
   node (`https://api.provable.com/v2/testnet/transaction/{id}`) and land on
@@ -149,4 +155,3 @@ a record of what the mocked suite could not establish on its own:
   practice. Reading the SDK's compiled source says it does; the
   `requestRecords` fallback in `src/wallet/useBalances.ts` only fires if the
   `credits.aleo` key is absent from the result.
-

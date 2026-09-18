@@ -1,11 +1,11 @@
 /**
  * DEV-ONLY helper: converts PUBLIC ALEO into a PRIVATE credits record.
  *
- * Why this exists: the spec funds testing via faucet.aleo.org, which
- * issues PUBLIC credits, but every swap here spends a PRIVATE record and one
+ * Why this exists: faucet.aleo.org, the documented funding route, issues
+ * PUBLIC credits, but every swap here spends a PRIVATE record and one
  * record must cover the whole input amount. Nothing in the required user flow
- * bridges that gap, and the spec scopes faucet/bridge features out of the
- * application itself — so this is a console tool for setting up a test wallet,
+ * bridges that gap, and faucet/bridge features are deliberately out of scope
+ * for the application itself — so this is a console tool for test wallets,
  * deliberately not a UI feature, and it is excluded from production builds.
  *
  * The connected wallet signs and proves. No key material is read or handled

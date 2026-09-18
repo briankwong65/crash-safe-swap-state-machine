@@ -46,7 +46,7 @@ destroys its owner's recovery path.
 `ApiClient` is a class with private fields, so a structurally-identical
 object cannot be passed to `planSwap`. `PinnedApiClient` subclasses it,
 overriding only `getRoute` to add `pool_key`; every other method inherits
-unchanged — the delegation the spec asks for, with no rebinding to
+unchanged — delegation without a single rebinding to
 get wrong. A `Proxy` would still need explicit rebinding, hiding the one
 method that differs.
 

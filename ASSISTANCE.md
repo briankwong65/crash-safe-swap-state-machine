@@ -19,8 +19,8 @@ I delegated implementation to the agent: the reducer (`swapMachine.ts`), the eff
 pending-claim persistence module, all UI components, and the test suite
 (232 tests across 14 files). The plan itself — component boundaries, the
 state machine's members, the persistence approach — was drafted by the agent
-from the spec brief to my direction, and revised throughout as real
-API shapes turned up.
+to my direction from a written spec, and revised throughout as real API
+shapes turned up.
 
 ## One AI output that was changed
 
@@ -50,7 +50,7 @@ exactly, and the code now prefers it, falling back to the shape heuristic —
 and throwing on disagreement — otherwise. In the shipped configuration that
 preference is dormant: `deriveSwapId` needs the optional `@provablehq/sdk`
 peer, which is not installed, so the heuristic is the live path. It was
-checked against the project's example transaction and then against both
+checked against a known-good example transaction and then against both
 live swaps.
 
 ## Verification

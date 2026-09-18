@@ -1,5 +1,5 @@
 {
-  "name": "shield-swap-trade-interface",
+  "name": "crash-safe-swap-state-machine",
   "version": "0.1.0",
   "directories": {
     "doc": "docs"

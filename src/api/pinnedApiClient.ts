@@ -11,8 +11,8 @@ export type PinnedApiClientOptions = ApiClientOptions & {
  *
  * SDK 0.7.0 does not expose `pool_key` on `getRoute`, though the endpoint
  * accepts it. Extending the client means every other method is inherited
- * unchanged — the delegation the spec asks for, with no rebinding to get
- * wrong — while the single overridden method pins the pool. A subclass also
+ * unchanged — delegation with no rebinding to get wrong — while the single
+ * overridden method pins the pool. A subclass also
  * stays assignable to `ApiClient`, so `planSwap(client, api, params)` takes it
  * directly.
  */

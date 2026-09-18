@@ -187,7 +187,7 @@ type ConfirmedTransactionLike = {
    * Confirmed live against the pinned node (`GET
    * {ALEO_NODE_URL}/testnet/transaction/confirmed/{id}` on
    * `api.provable.com/v2`, 2026-08-31): the two real transactions cited in
-   * the spec (an accepted swap request and its accepted claim) both
+   * a known-good pair (an accepted swap request and its accepted claim) both
    * came back `{ type, index, status: "accepted", finalize, transaction }`.
    * `@provablehq/aleo-types`' `TransactionStatus` enum names the sibling
    * values `"pending" | "accepted" | "failed" | "rejected"`, which lines up
