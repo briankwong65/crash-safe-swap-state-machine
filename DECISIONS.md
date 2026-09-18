@@ -71,6 +71,9 @@ says not to resubmit while waiting.
   never a fallback.
 - The thin-liquidity hint may miss one DEX API phrasing, showing raw
   server text.
+- `waitForTransaction` treats a confirmed transaction as rejected on
+  `status: "rejected"`. Only accepted transactions were available to test
+  against, so the literal string is unverified.
 - `faucet.aleo.org` issues PUBLIC credits while every swap spends a
   PRIVATE record, and nothing in the required flow bridges that. A
   dev-only console helper (`src/dev/shieldCredits.ts`) converts them for
@@ -82,7 +85,7 @@ Contract tests at the integration boundaries. Both directions completed on
 testnet (links in `README.md`), and that live run exposed seven defects the
 232 mocked tests, a clean typecheck and a working build had all passed over
 — every one at a boundary with the SDK, the wallet or the node
-(`ASSISTANCE.md` lists them). The mocks encoded my assumptions rather than
+(`NOTES.md` lists them). The mocks encoded my assumptions rather than
 those systems' real behaviour, so they agreed with the code and proved
 nothing about the integration. A fake adapter returning Shield's actual
 shapes — `recordView`, a `shield_…` request handle — plus assertions that

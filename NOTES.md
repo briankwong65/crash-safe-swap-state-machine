@@ -1,28 +1,38 @@
-# Assistance
+# Notes
 
-## Tools used
+Build notes for this project: where my assumptions about the SDK turned out
+to be wrong, what a passing test suite failed to catch, and the calls I made
+along the way. Design rationale lives in `DECISIONS.md`; setup and usage in
+`README.md`.
 
-- Claude Code (Anthropic's CLI agent) for the bulk of implementation, test
-  writing, and these three documents.
-- `npm`, `tsc`, `vitest`, and `vite` for dependency management, type
-  checking, testing, and the production build — run directly, not through
-  the agent's judgment.
-- Reading the installed SDK's compiled source and `.d.ts` files directly
-  (`node_modules/@provablehq/shield-swap-sdk`) whenever the plan's assumption
-  about an API shape needed checking against the real package rather than
-  its documentation.
+## What a green test suite did not catch
 
-## Work delegated to AI
+The live run is where most of the real defects surfaced. 232 passing tests,
+a clean typecheck and a working production build coexisted with seven bugs,
+each at a boundary between this code and something external:
 
-I delegated implementation to the agent: the reducer (`swapMachine.ts`), the effect-running hook
-(`useSwapFlow.ts`), the wallet-session hook, the pinned API client, the
-pending-claim persistence module, all UI components, and the test suite
-(232 tests across 14 files). The plan itself — component boundaries, the
-state machine's members, the persistence approach — was drafted by the agent
-to my direction from a written spec, and revised throughout as real API
-shapes turned up.
+1. The dev API base URL was relative; the SDK builds requests with
+   single-argument `new URL()`, which rejects a relative string.
+2. Shield returns records as `recordView.fields`; the SDK's
+   `getPrivateBalances` reads only `recordPlaintext`, so balances read zero
+   against a real wallet holding real records.
+3. The wallet adapter transport refuses chain reads, so every quote failed
+   until an HTTP transport was added as a fallback.
+4. That HTTP transport defaults to mainnet, where the pinned pool does not
+   exist.
+5. The Aleo node needed a dev proxy for the same CORS reason as the DEX API.
+6. `swap()` returns Shield's own request handle, not an Aleo transaction id;
+   the on-chain id has to be resolved through the adapter afterwards.
+7. A write's `imports` map needs each token's AMM program, not the program
+   its records live in.
 
-## One AI output that was changed
+None was reachable by the test suite, because the mocks encoded assumptions
+about the SDK and the wallet rather than their real behaviour — so the tests
+agreed with the code and proved nothing about the integration. Contract tests against those boundaries are
+named as the next improvement in `DECISIONS.md`, which does not repeat this
+list.
+
+## Assumptions that did not survive the real SDK
 
 The task plan specified a hand-written `ApiClient` facade: a plain object
 implementing the same methods as the SDK's `ApiClient`, delegating every
@@ -53,50 +63,7 @@ peer, which is not installed, so the heuristic is the live path. It was
 checked against a known-good example transaction and then against both
 live swaps.
 
-## Verification
-
-- `npm run typecheck` (`tsc --noEmit`) — clean.
-- `npm test` (`vitest run`) — 232/232 passing, mocking the wallet adapter,
-  the SDK's `planSwap`/`swap`/`claimSwapOutput`, and `fetch` at the module
-  boundary; no test drives a real wallet or network call.
-- `npm run build` — production build succeeds.
-- Manual reading of the relevant SDK source (`node_modules/@provablehq/...`)
-  whenever a plan assumption about a type or method needed confirming, as
-  described above.
-- The live testnet flow was run separately in Chrome with the Shield Wallet
-  extension: both directions completed, and all four transactions in
-  `README.md` are confirmed `accepted` on chain. It could not be run from
-  the development environment, which has no browser extension, API key, or
-  faucet-funded address.
-
-## What the mocked tests did not catch
-
-The live run is where most of the real defects surfaced. 232 passing tests,
-a clean typecheck and a working production build coexisted with seven bugs,
-each at a boundary between this code and something external:
-
-1. The dev API base URL was relative; the SDK builds requests with
-   single-argument `new URL()`, which rejects a relative string.
-2. Shield returns records as `recordView.fields`; the SDK's
-   `getPrivateBalances` reads only `recordPlaintext`, so balances read zero
-   against a real wallet holding real records.
-3. The wallet adapter transport refuses chain reads, so every quote failed
-   until an HTTP transport was added as a fallback.
-4. That HTTP transport defaults to mainnet, where the pinned pool does not
-   exist.
-5. The Aleo node needed a dev proxy for the same CORS reason as the DEX API.
-6. `swap()` returns Shield's own request handle, not an Aleo transaction id;
-   the on-chain id has to be resolved through the adapter afterwards.
-7. A write's `imports` map needs each token's AMM program, not the program
-   its records live in.
-
-None was reachable by the test suite, because the mocks encoded assumptions
-about the SDK and the wallet rather than their real behaviour — so the tests
-agreed with the code and proved nothing about the integration. Contract tests against those boundaries are
-named as the next improvement in `DECISIONS.md`, which does not repeat this
-list.
-
-## Judgement calls I made
+## Judgement calls
 
 **How the work was executed.** I had the agent plan the build up front,
 then execute it task by task with a separate review of every task's diff
@@ -128,3 +95,40 @@ against an SDK that had never been run: its API-shape assumptions
 propagated into every task that copied them, and only a live wallet exposed
 them. Next time I would specify interfaces and test cases at plan time, and
 let each task discover the real API surface itself.
+
+## How it was verified
+
+- `npm run typecheck` (`tsc --noEmit`) — clean.
+- `npm test` (`vitest run`) — 232/232 passing, mocking the wallet adapter,
+  the SDK's `planSwap`/`swap`/`claimSwapOutput`, and `fetch` at the module
+  boundary; no test drives a real wallet or network call.
+- `npm run build` — production build succeeds.
+- Manual reading of the relevant SDK source (`node_modules/@provablehq/...`)
+  whenever a plan assumption about a type or method needed confirming, as
+  described above.
+- The live testnet flow was run separately in Chrome with the Shield Wallet
+  extension: both directions completed, and all four transactions in
+  `README.md` are confirmed `accepted` on chain. It could not be run from
+  the development environment, which has no browser extension, API key, or
+  faucet-funded address.
+
+## How it was built
+
+- Claude Code (Anthropic's CLI agent) for the bulk of implementation, the
+  test suite, and these notes.
+- `npm`, `tsc`, `vitest`, and `vite` for dependency management, type
+  checking, testing, and the production build — run directly, not through
+  the agent's judgment.
+- Reading the installed SDK's compiled source and `.d.ts` files directly
+  (`node_modules/@provablehq/shield-swap-sdk`) whenever an assumption about
+  an API shape needed checking against the real package rather than its
+  documentation — which, as the first section shows, was often.
+
+## What was delegated
+
+I delegated implementation to the agent: the reducer (`swapMachine.ts`), the
+effect-running hook (`useSwapFlow.ts`), the wallet-session hook, the pinned
+API client, the pending-claim persistence module, all UI components, and the
+test suite (232 tests across 14 files). The design — component boundaries,
+the state machine's members, the persistence approach — was drafted to my
+direction and revised throughout as real API shapes turned up.
